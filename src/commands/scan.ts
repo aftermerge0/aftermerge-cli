@@ -1,10 +1,20 @@
 import { Command, Options } from "@effect/cli";
-import { Console, Effect } from "effect";
+import type { HttpClient } from "@effect/platform";
+import { Console, Effect, Option } from "effect";
 import { apiRequest, ApiError } from "../http.js";
-import { getOriginRemote, normalizeCloneUrl } from "../git.js";
+import {
+  archiveFilesAtRef,
+  getCurrentBranch,
+  getDefaultBranch,
+  getOriginRemote,
+  normalizeCloneUrl,
+  resolveCommitSha,
+  type ArchivedFile,
+} from "../git.js";
 
-const prOption = Options.integer("pr").pipe(
-  Options.withDescription("Pull request number to analyze"),
+const baseOption = Options.text("base").pipe(
+  Options.optional,
+  Options.withDescription("Base ref to diff against (defaults to the repo's default branch)"),
 );
 
 interface RepoRow {
@@ -31,12 +41,6 @@ interface Finding {
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(["completed", "failed", "cancelled"]);
 const KNOWN_STATUSES: ReadonlySet<string> = new Set(["pending", "running", "completed", "failed", "cancelled"]);
 
-// Guards on every cast API response before it's used: an `as`-cast alone
-// doesn't stop a malformed/differently-shaped body from throwing once it's
-// actually read (e.g. `.find` on a non-array, `.status` on `null`) — and a
-// plain throw inside `Effect.gen` is an uncatchable defect, not a normal
-// Effect failure (see url.ts's doc comment for the same footgun). These
-// guards turn that into a clean, catchable `Error` instead.
 const isRepoRow = (value: unknown): value is RepoRow => {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -60,7 +64,23 @@ const isFinding = (value: unknown): value is Finding => {
   return typeof v.title === "string" && typeof v.severity === "string" && typeof v.band === "string";
 };
 
-export const analyzeCommand = Command.make("analyze", { pr: prOption }, ({ pr }) =>
+/** Uploads one ref's content and waits for ingestion — `/api/ingest/upload`
+ * runs the whole ingest synchronously (triggerAndWait) and is idempotent: if
+ * this exact commit is already ingested, the server's own freshness check
+ * returns almost immediately (see ingest-repo-from-upload.ts), so calling
+ * this for a base ref that's already indexed from a prior scan costs
+ * nothing beyond one quick round-trip. */
+const uploadRef = (
+  repositoryId: string,
+  branch: string,
+  commitSha: string,
+  files: ArchivedFile[],
+): Effect.Effect<void, ApiError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    yield* apiRequest("POST", "/api/ingest/upload", { repositoryId, branch, commitSha, files });
+  });
+
+export const scanCommand = Command.make("scan", { base: baseOption }, ({ base }) =>
   Effect.gen(function* () {
     const remoteUrl = yield* getOriginRemote();
     const target = normalizeCloneUrl(remoteUrl);
@@ -72,14 +92,40 @@ export const analyzeCommand = Command.make("analyze", { pr: prOption }, ({ pr })
     const repo = reposRaw.find((r) => normalizeCloneUrl(r.cloneUrl) === target);
     if (!repo) {
       return yield* Effect.fail(
-        new Error("This repo isn't connected yet. Connect it from the web dashboard first, then try again."),
+        new Error(
+          "This repo isn't connected yet. Run `aftermerge repos add-local` first, then try again.",
+        ),
       );
     }
 
-    yield* Console.log(`Starting analysis for ${repo.owner}/${repo.name} PR #${pr}...`);
-    const runRaw = yield* apiRequest("POST", "/api/analysis", {
+    const headBranch = yield* getCurrentBranch();
+    const headCommitSha = yield* resolveCommitSha("HEAD");
+    const baseBranch = Option.isSome(base) ? base.value : yield* getDefaultBranch();
+    const baseCommitSha = yield* resolveCommitSha(baseBranch);
+
+    if (headCommitSha === baseCommitSha) {
+      return yield* Effect.fail(
+        new Error(`'${headBranch}' and '${baseBranch}' are the same commit — nothing to analyze.`),
+      );
+    }
+
+    yield* Console.log(`Reading ${baseBranch} (base)...`);
+    const baseFiles = yield* archiveFilesAtRef(baseBranch);
+    yield* Console.log(`Uploading and indexing ${baseBranch} (${baseFiles.length} files)...`);
+    yield* uploadRef(repo.id, baseBranch, baseCommitSha, baseFiles);
+
+    yield* Console.log(`Reading ${headBranch} (head)...`);
+    const headFiles = yield* archiveFilesAtRef("HEAD");
+    yield* Console.log(`Uploading and indexing ${headBranch} (${headFiles.length} files)...`);
+    yield* uploadRef(repo.id, headBranch, headCommitSha, headFiles);
+
+    yield* Console.log(`Starting analysis for ${repo.owner}/${repo.name} (${baseBranch}...${headBranch})...`);
+    const runRaw = yield* apiRequest("POST", "/api/analysis/local", {
       repositoryId: repo.id,
-      pullRequestNumber: pr,
+      headBranch,
+      headCommitSha,
+      baseBranch,
+      baseCommitSha,
     });
     if (!isAnalysisRun(runRaw)) {
       return yield* Effect.fail(new Error("Server returned an unexpected response starting the run."));
@@ -119,10 +165,9 @@ export const analyzeCommand = Command.make("analyze", { pr: prOption }, ({ pr })
     for (const finding of findingsRaw) {
       yield* Console.log(`  [${finding.severity}/${finding.band}] ${finding.title}`);
     }
-  }).pipe(
-    // tapError (not catchAll): print the message but let the failure keep
-    // propagating, so BunRuntime.runMain's default teardown exits non-zero —
-    // a CLI's failures need to be visible to scripts/CI, unlike a web request.
-    Effect.tapError((error: Error | ApiError) => Console.error(error.message)),
+  }).pipe(Effect.tapError((error: Error | ApiError) => Console.error(error.message))),
+).pipe(
+  Command.withDescription(
+    "Analyze the current branch vs. a base ref, using only local git content — no GitHub token needed",
   ),
-).pipe(Command.withDescription("Trigger analysis for a pull request in the current repo"));
+);

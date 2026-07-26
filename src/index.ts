@@ -8,10 +8,11 @@ import { analyzeCommand } from "./commands/analyze.js";
 import { reposCommand } from "./commands/repos.js";
 import { findingsCommand } from "./commands/findings.js";
 import { chatCommand } from "./commands/chat.js";
+import { scanCommand } from "./commands/scan.js";
 
 const rootCommand = Command.make("aftermerge").pipe(
   Command.withDescription("AfterMerge CLI — sign in and run checks from your terminal"),
-  Command.withSubcommands([authCommand, analyzeCommand, reposCommand, findingsCommand, chatCommand]),
+  Command.withSubcommands([authCommand, analyzeCommand, reposCommand, findingsCommand, chatCommand, scanCommand]),
 );
 
 const cli = Command.run(rootCommand, {
