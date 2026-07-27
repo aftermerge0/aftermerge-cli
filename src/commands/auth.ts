@@ -3,8 +3,8 @@ import { HttpClient, HttpClientRequest } from "@effect/platform";
 import { Console, Effect } from "effect";
 import { openInBrowser } from "../browser.js";
 import { clearCredentials, loadCredentials, saveCredentials } from "../config.js";
-import { apiRequest } from "../http.js";
-import { parseUrl } from "../url.js";
+import { apiRequest, CLI_USER_AGENT } from "../http.js";
+import { parseUrl, validateServerUrl } from "../url.js";
 
 // Not a secret — better-auth's deviceAuthorization plugin (src/lib/auth.ts)
 // has no validateClient configured, so any non-empty client_id is accepted.
@@ -59,6 +59,7 @@ const requestDeviceCode = (server: string): Effect.Effect<DeviceCodeResponse, Er
     const url = yield* parseUrl("/api/auth/device/code", server);
     const request = HttpClientRequest.post(url).pipe(
       HttpClientRequest.acceptJson,
+      HttpClientRequest.setHeader("User-Agent", CLI_USER_AGENT),
       HttpClientRequest.bodyUnsafeJson({ client_id: CLIENT_ID }),
     );
     const response = yield* client.execute(request).pipe(
@@ -89,6 +90,7 @@ const pollOnce = (server: string, deviceCode: string): Effect.Effect<DeviceToken
     const url = yield* parseUrl("/api/auth/device/token", server);
     const request = HttpClientRequest.post(url).pipe(
       HttpClientRequest.acceptJson,
+      HttpClientRequest.setHeader("User-Agent", CLI_USER_AGENT),
       HttpClientRequest.bodyUnsafeJson({
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         device_code: deviceCode,
@@ -130,6 +132,7 @@ const pollForToken = (
 
 const login = Command.make("login", { server: serverOption }, ({ server }) =>
   Effect.gen(function* () {
+    yield* validateServerUrl(server);
     const code = yield* requestDeviceCode(server);
 
     yield* Console.log("");

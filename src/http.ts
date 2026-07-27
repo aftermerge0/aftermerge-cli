@@ -1,7 +1,17 @@
+import { hostname } from "node:os";
 import { HttpClient, HttpClientRequest } from "@effect/platform";
 import { Data, Effect } from "effect";
 import { loadCredentials } from "./config.js";
 import { parseUrl } from "./url.js";
+import pkg from "../package.json" with { type: "json" };
+
+/** Sent on every CLI request, including the unauthenticated device-code poll
+ * (see auth.ts) — the request whose headers better-auth's session-creation
+ * hook (`internalAdapter.createSession`) captures into the new session's
+ * `userAgent` column. This is what lets the web dashboard's Security
+ * settings page (plan 147 §3) label a device-issued session "CLI on
+ * <hostname>" instead of running a non-browser UA through a browser parser. */
+export const CLI_USER_AGENT = `aftermerge-cli/${pkg.version} (${hostname()})`;
 
 /** Anything that reaches the CLI from the backend: a network failure, a
  * non-2xx response, or a body that isn't JSON. `message` is the wire's
@@ -44,6 +54,7 @@ export const apiRequest = (
     let request = HttpClientRequest.make(method)(url.toString()).pipe(
       HttpClientRequest.acceptJson,
       HttpClientRequest.bearerToken(credentials.token),
+      HttpClientRequest.setHeader("User-Agent", CLI_USER_AGENT),
     );
     if (body !== undefined) request = request.pipe(HttpClientRequest.bodyUnsafeJson(body));
 

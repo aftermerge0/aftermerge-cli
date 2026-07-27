@@ -15,3 +15,26 @@ export const parseUrl = (path: string, base: string): Effect.Effect<URL, Error> 
     try: () => new URL(path, base),
     catch: () => new Error(`"${base}" is not a valid URL — did you forget "http://" or "https://"?`),
   });
+
+const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Plan 147 §1 — refuse to send the session bearer token in cleartext.
+ * `--server` accepts either an `https:` origin or a loopback host (the
+ * default local-dev flow, `http://localhost:3000`, never leaves the
+ * machine so it's exempt). Anything else over plain `http://` would put the
+ * token on the wire in the clear on every subsequent command. */
+export const validateServerUrl = (server: string): Effect.Effect<void, Error> =>
+  Effect.try({
+    try: () => new URL(server),
+    catch: () => new Error(`"${server}" is not a valid URL — did you forget "http://" or "https://"?`),
+  }).pipe(
+    Effect.flatMap((url) =>
+      url.protocol === "https:" || LOCAL_HOSTNAMES.has(url.hostname)
+        ? Effect.void
+        : Effect.fail(
+            new Error(
+              `Refusing to sign in to "${server}" over plain HTTP — your session token would be sent in cleartext. Use an https:// URL, or localhost for local dev.`,
+            ),
+          ),
+    ),
+  );
