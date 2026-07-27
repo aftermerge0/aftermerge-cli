@@ -1,8 +1,9 @@
 import { Command, Prompt } from "@effect/cli";
 import { HttpClient } from "@effect/platform";
-import { Console, Effect, Predicate } from "effect";
+import { Console, Effect } from "effect";
 import { loadCredentials } from "../config.js";
-import { apiRequest, ApiError } from "../http.js";
+import { apiRequest, ApiError, CLI_USER_AGENT } from "../http.js";
+import { onQuit } from "../prompt-utils.js";
 
 interface ThreadRow {
   readonly id: string;
@@ -20,16 +21,100 @@ const createOrReuseThread = (): Effect.Effect<string, ApiError | Error, HttpClie
     return thread.id;
   });
 
+/** Issues one chat turn. Split out from `sendMessage` (previously one
+ * ~66-line function doing request-building, error-body parsing, SSE
+ * framing, and event rendering all at once) so each concern is independently
+ * readable. Sets the same `User-Agent` every other CLI request sends
+ * (`http.ts`'s `CLI_USER_AGENT`) — this call bypasses `apiRequest` entirely
+ * (streaming a chunked SSE body through Effect's HTTP stream primitives
+ * isn't worth it for one call site), and previously dropped that header as
+ * a side effect of bypassing the shared client. */
+const postChatTurn = (
+  baseUrl: string,
+  token: string,
+  threadId: string,
+  text: string,
+  signal: AbortSignal,
+): Promise<Response> =>
+  fetch(new URL("/api/chat", baseUrl), {
+    method: "POST",
+    signal,
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+      "user-agent": CLI_USER_AGENT,
+    },
+    body: JSON.stringify({
+      id: threadId,
+      message: { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text }] },
+    }),
+  });
+
+async function parseErrorResponse(response: Response): Promise<string> {
+  let message = `Chat request failed (${response.status})`;
+  try {
+    const errorBody = (await response.json()) as { error?: string };
+    if (typeof errorBody.error === "string") message = errorBody.error;
+  } catch {
+    // no JSON body — keep the generic message
+  }
+  return message;
+}
+
 /** `/api/chat` streams the Vercel AI SDK's UI-message-stream protocol
  * (`createUIMessageStreamResponse`, src/lib/chat/run-chat-turn.ts) — an SSE
- * body of `data: {type, ...}` lines. This only extracts `text-delta` parts
- * for a plain-text terminal experience; tool calls/reasoning parts are
- * ignored (v1 scope). Uses plain `fetch` rather than `apiRequest`/
- * `@effect/platform`'s HttpClient because consuming a chunked body directly
- * is simpler than threading it through Effect's stream primitives here.
- * Wrapped in `Effect.tryPromise` (not `Effect.promise`) specifically so a
+ * body of `data: {type, ...}` lines. Yields each payload string as it's
+ * framed. The trailing `decoder.decode()` call (no arguments) flushes any
+ * multi-byte character left buffered mid-sequence at stream end — the
+ * previous version never called this, silently dropping a trailing
+ * character if a chunk boundary landed inside one. */
+async function* readSseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = line.slice("data: ".length).trim();
+        if (payload && payload !== "[DONE]") yield payload;
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.startsWith("data: ")) {
+      const payload = buffer.slice("data: ".length).trim();
+      if (payload && payload !== "[DONE]") yield payload;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function renderEvent(payload: string): void {
+  try {
+    const event = JSON.parse(payload) as { type?: string; delta?: string; errorText?: string };
+    if (event.type === "text-delta" && typeof event.delta === "string") {
+      process.stdout.write(event.delta);
+    } else if (event.type === "error") {
+      process.stdout.write(`\n[error: ${event.errorText ?? "unknown"}]\n`);
+    }
+  } catch {
+    // a partial/malformed event line — skip it, don't crash the chat loop
+  }
+}
+
+/** Wrapped in `Effect.tryPromise` (not `Effect.promise`) specifically so a
  * thrown/rejected error becomes a normal catchable Effect failure, not a
- * defect — see the same footgun documented in url.ts/browser.ts. */
+ * defect — see the same footgun documented in url.ts/config.ts. Passes the
+ * Effect runtime's own interruption signal through to `fetch`, so
+ * interrupting this fiber (Ctrl+C during a streaming turn) actually cancels
+ * the in-flight request instead of abandoning it to keep running and
+ * reading in the background. */
 const sendMessage = (
   baseUrl: string,
   token: string,
@@ -37,54 +122,23 @@ const sendMessage = (
   text: string,
 ): Effect.Effect<void, ApiError> =>
   Effect.tryPromise({
-    try: async () => {
-      const response = await fetch(new URL("/api/chat", baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          id: threadId,
-          message: { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text }] },
-        }),
-      });
+    try: async (signal) => {
+      const response = await postChatTurn(baseUrl, token, threadId, text, signal);
 
-      if (!response.ok || !response.body) {
-        let message = `Chat request failed (${response.status})`;
-        try {
-          const errorBody = (await response.json()) as { error?: string };
-          if (typeof errorBody.error === "string") message = errorBody.error;
-        } catch {
-          // no JSON body — keep the generic message
-        }
-        throw new ApiError({ status: response.status, message });
+      // Checked separately (not `!response.ok || !response.body`, which the
+      // previous version used): a 200 with no body is a distinct, genuinely
+      // contradictory server bug, not the same "request failed" case as a
+      // non-2xx status, and deserves its own message rather than reporting
+      // "Chat request failed (200)."
+      if (!response.ok) {
+        throw new ApiError({ status: response.status, message: await parseErrorResponse(response) });
+      }
+      if (!response.body) {
+        throw new ApiError({ status: response.status, message: "Chat response had no body" });
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice("data: ".length).trim();
-          if (!payload || payload === "[DONE]") continue;
-          try {
-            const event = JSON.parse(payload) as { type?: string; delta?: string; errorText?: string };
-            if (event.type === "text-delta" && typeof event.delta === "string") {
-              process.stdout.write(event.delta);
-            } else if (event.type === "error") {
-              process.stdout.write(`\n[error: ${event.errorText ?? "unknown"}]\n`);
-            }
-          } catch {
-            // a partial/malformed event line — skip it, don't crash the chat loop
-          }
-        }
+      for await (const payload of readSseLines(response.body)) {
+        renderEvent(payload);
       }
       process.stdout.write("\n");
     },
@@ -122,14 +176,7 @@ export const chatCommand = Command.make("chat", {}, () =>
       yield* Console.log("");
     }
   }).pipe(
-    Effect.catchAll((error) => {
-      // Ctrl+C during a prompt is a deliberate, graceful exit — not a
-      // failure. Anything else should still print and propagate so
-      // BunRuntime.runMain's default teardown exits non-zero.
-      if (Predicate.isTagged(error, "QuitException")) {
-        return Console.log("\nExiting chat.");
-      }
-      return Effect.zipRight(Console.error(error.message), Effect.fail(error));
-    }),
+    (effect) => onQuit(effect, "\nExiting chat."),
+    Effect.tapError((error: Error | ApiError) => Console.error(error.message)),
   ),
 ).pipe(Command.withDescription("Chat with the repo (interactive)"));

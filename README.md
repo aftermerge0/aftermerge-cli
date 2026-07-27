@@ -40,7 +40,7 @@ bun run src/index.ts auth login [--server <url>]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--server` | `http://localhost:3000` | Base URL of your AfterMerge deployment. Point this at a real deployment with `--server https://your-instance.example.com`. |
+| `--server` | `http://localhost:3000` | Base URL of your AfterMerge deployment. Point this at a real deployment with `--server https://your-instance.example.com`. Must be `https://`, or `localhost`/`127.0.0.1`/`[::1]` for local dev — a plain-`http://` non-local server is rejected outright, since your session token would otherwise be sent in cleartext. |
 
 What happens:
 
@@ -48,9 +48,10 @@ What happens:
 2. It prints both and opens your default browser to an approval page.
 3. It polls in the background until you approve (or deny, or the code
    expires — default 30 minutes).
-4. On approval, it stores a session token locally at
-   `~/.config/aftermerge/credentials.json` (file permissions `600`, directory
-   permissions `700` — readable only by you).
+4. On approval, it stores a session token locally — in your OS's keychain
+   (macOS Keychain / Windows Credential Manager / Linux Secret Service) where
+   one is available, or a permission-locked file (`600`/`700`) as a fallback
+   when it isn't. See **Where your credentials live** below for the details.
 
 Example:
 
@@ -165,6 +166,69 @@ branch superseded it) is reported the same way, and also exits non-zero.
 
 ---
 
+### `scan`
+
+The credential-free equivalent of `analyze` — analyzes your current branch
+against a base ref using only the content already in your local git
+checkout. No GitHub token is ever required or sent, for either registering
+the repo (see `repos add-local` below) or running the analysis.
+
+```sh
+bun run src/index.ts scan [--base <ref>]
+```
+
+| Flag | Required | Meaning |
+|---|---|---|
+| `--base` | no | Base ref to diff against. Defaults to the repo's configured default branch. |
+
+**How it figures out which repo you mean:** the same `git remote get-url
+origin` + match-against-connected-repos logic `analyze` uses — but here the
+repo must have been registered via `repos add-local` (credential-free), not
+necessarily through the web dashboard.
+
+What happens:
+
+1. Resolves your current branch (the "head") and the base ref, and their
+   commit shas — entirely locally, no server/token involved. Fails clearly
+   if you're in a detached-HEAD state (no branch checked out) or if head and
+   base are the same commit.
+2. Reads every tracked file at both refs via `git` directly (no filesystem
+   extraction step) and uploads each ref's content for the server to index.
+   Uploading an already-indexed commit (e.g. a base branch a prior `scan`
+   already covered) is cheap — the server's freshness check skips
+   re-ingesting it.
+3. Starts an analysis run comparing the two refs, then polls and prints
+   findings exactly like `analyze`.
+
+Example:
+
+```
+$ bun run src/index.ts scan --base main
+Reading main (base)...
+Uploading and indexing main (482 files)...
+Reading my-feature-branch (head)...
+Uploading and indexing my-feature-branch (486 files)...
+Starting analysis for acme/billing-service (main...my-feature-branch)...
+Run id: a1b2c3d4-...
+  running...
+  running...
+  completed...
+2 finding(s):
+  [high/high-confidence] Missing null check on payment webhook
+  [low/medium-confidence] Unused import in retry handler
+```
+
+Notes:
+
+- There's no "pull request" concept here — no GitHub token means no PR
+  metadata to fetch. Findings and status work identically; the run just
+  isn't tied to a PR number.
+- Large repos take longer on the first `scan` against a brand-new base
+  branch (nothing to reuse yet); subsequent scans against an
+  already-indexed base are faster.
+
+---
+
 ### `repos list`
 
 Lists every repo connected to your organization.
@@ -182,6 +246,68 @@ acme/frontend         (9b2d4e11-...)
 The id in parentheses is what other commands (like a future `analyze --repo`
 override, not yet built) would take. Right now it's mainly useful for
 cross-referencing with the web dashboard.
+
+---
+
+### `repos add <owner/name>`
+
+Registers a repo with your org — the same seat/plan check and GitHub lookup
+the web dashboard's "connect repo" dialog performs, from your terminal.
+Requires a GitHub connection already configured for your org (this command
+still talks to GitHub to fetch the repo's real metadata; for a token-free
+alternative see `repos add-local` below).
+
+```sh
+bun run src/index.ts repos add <owner/name> [--branch <name>] [--auto-index]
+```
+
+| Flag | Required | Meaning |
+|---|---|---|
+| `--branch` | no | Also track this branch, if it differs from GitHub's configured default branch. |
+| `--auto-index` | no | Index the default branch immediately after registering (uses analysis/LLM budget — off by default, same as the web dashboard). |
+
+```
+$ bun run src/index.ts repos add acme/billing-service
+Registered acme/billing-service  (7f3e1c9a-...)
+Default branch: main
+```
+
+### `repos add-local`
+
+Registers the repo in your **current directory** without ever sending us a
+GitHub token — every field (owner, name, clone URL, default branch) is
+derived from your local git checkout. This is what `scan` requires before it
+can run against a repo. Subject to the same seat/plan limit as `repos add`
+(it's provider-agnostic — it just counts registered repos, regardless of how
+each one's metadata was sourced).
+
+```sh
+bun run src/index.ts repos add-local
+```
+
+```
+$ bun run src/index.ts repos add-local
+Registered acme/billing-service  (7f3e1c9a-...)
+Default branch: main
+```
+
+### `repos remove <owner/name>`
+
+Removes a repo from your org (soft-deleted; frees the org's repo-count seat
+immediately). Prompts for confirmation unless `--yes`/`-y` is passed.
+
+```sh
+bun run src/index.ts repos remove <owner/name> [--yes]
+```
+
+```
+$ bun run src/index.ts repos remove acme/billing-service
+Remove acme/billing-service from your org? (y/N) y
+Removed acme/billing-service.
+```
+
+Pressing **Ctrl+C** at the confirmation prompt cancels cleanly (prints
+"Cancelled.", exits `0`) rather than removing anything.
 
 ---
 
@@ -276,9 +402,27 @@ etc.) — every command follows the same contract:
 
 ## Where your credentials live
 
-`~/.config/aftermerge/credentials.json` — a JSON object with your session
-token and the server URL you signed into, permissioned so only your user
-account can read it. `auth logout` deletes this file. There is currently no
+Your session token is stored in your OS's native keychain where one is
+available:
+
+- macOS Keychain
+- Windows Credential Manager
+- Linux Secret Service (`libsecret` — most desktop environments; a headless
+  box with no Secret Service running doesn't have one)
+
+The (non-secret) server URL you signed into is kept alongside it in a plain
+file, `~/.config/aftermerge/config.json`.
+
+If no keychain is available on your machine, the CLI falls back to storing
+the token itself in a permission-locked file
+(`~/.config/aftermerge/credentials.json`, `600`/`700` permissions) instead —
+you'll see a one-time warning when this happens. If a keychain later
+becomes available (e.g. you copy your config to a different machine), the
+next command transparently migrates the token in and removes the plaintext
+fallback file — no re-login required.
+
+`auth logout` clears the token from wherever it's actually stored (keychain
+and/or fallback file) and removes both local files. There is currently no
 support for being signed into more than one server/org at a time from the
 same machine (see plan 145's deferred list) — logging into a different
 server overwrites the previous credentials.
@@ -293,9 +437,19 @@ run `auth login` yet, or your session has expired/been revoked. Run
 — the `--server` value needs a scheme; `--server app.example.com` won't
 work, `--server https://app.example.com` will.
 
+**"Refusing to sign in to \<server\> over plain HTTP..."** — `--server` must
+be `https://`, or `localhost`/`127.0.0.1`/`[::1]` for local dev. A plain
+`http://` URL to any other host is rejected before any request is sent, so
+your session token is never put on the wire in cleartext.
+
 **"This repo isn't connected yet."** on `analyze` — the repo has to already
 be registered with your org via the web dashboard (which drives the GitHub
-App install) before the CLI can start a run against it.
+App install) before the CLI can start a run against it. On `scan`, run
+`repos add-local` first instead — no web dashboard/GitHub App needed.
+
+**"You're in a detached HEAD state..."** on `scan` — `scan` needs a real
+checked-out branch (it uses the branch name as part of what gets uploaded).
+Check out a branch first (`git checkout <branch>`), then re-run `scan`.
 
 **A command hangs on `analyze`'s polling step** — this only happens if the
 server never returns a terminal status (`completed`/`failed`/`cancelled`)

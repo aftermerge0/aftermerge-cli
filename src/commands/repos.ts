@@ -2,40 +2,9 @@ import { Args, Command, Options, Prompt } from "@effect/cli";
 import type { HttpClient } from "@effect/platform";
 import { Console, Effect, Option } from "effect";
 import { apiRequest, ApiError } from "../http.js";
-import { getDefaultBranch, getOriginRemote, parseOwnerName as parseCloneUrlOwnerName } from "../git.js";
-
-interface RepoRow {
-  readonly id: string;
-  readonly owner: string;
-  readonly name: string;
-}
-
-interface RegisteredRepo {
-  readonly id: string;
-  readonly owner: string;
-  readonly name: string;
-  readonly defaultBranch: string;
-}
-
-interface EnsuredBranch {
-  readonly id: string;
-  readonly name: string;
-}
-
-const isRepoRow = (value: unknown): value is RepoRow => {
-  if (!value || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return typeof v.id === "string" && typeof v.owner === "string" && typeof v.name === "string";
-};
-
-const isRegisteredRepo = (value: unknown): value is RegisteredRepo =>
-  isRepoRow(value) && typeof (value as unknown as Record<string, unknown>).defaultBranch === "string";
-
-const isEnsuredBranch = (value: unknown): value is EnsuredBranch => {
-  if (!value || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return typeof v.id === "string" && typeof v.name === "string";
-};
+import { getDefaultBranch, getOriginRemote, parseOwnerName } from "../git.js";
+import { onQuit } from "../prompt-utils.js";
+import { type RepoRow, isRepoRow, isRegisteredRepo, isEnsuredBranch } from "../api-types.js";
 
 const list = Command.make("list", {}, () =>
   Effect.gen(function* () {
@@ -54,8 +23,11 @@ const list = Command.make("list", {}, () =>
 ).pipe(Command.withDescription("List repos connected to your org"));
 
 /** Shared by `add` and `remove` — both take a GitHub `owner/name` shorthand
- * rather than an internal repo id, since that's what a user actually knows. */
-const parseOwnerName = (ownerRepo: string): Effect.Effect<{ owner: string; name: string }, Error> => {
+ * rather than an internal repo id, since that's what a user actually knows.
+ * Named distinctly from `git.ts`'s `parseOwnerName` (which parses a clone
+ * URL, not this CLI-argument shorthand) — the two used to collide under the
+ * same name, resolved only by an import alias at the call site. */
+const parseOwnerRepoArg = (ownerRepo: string): Effect.Effect<{ owner: string; name: string }, Error> => {
   const parts = ownerRepo.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     return Effect.fail(
@@ -112,7 +84,7 @@ const add = Command.make(
   { ownerRepo: ownerRepoArg, branch: branchOption, autoIndex: autoIndexOption },
   ({ ownerRepo, branch, autoIndex }) =>
     Effect.gen(function* () {
-      const { owner, name } = yield* parseOwnerName(ownerRepo);
+      const { owner, name } = yield* parseOwnerRepoArg(ownerRepo);
 
       const created = yield* apiRequest("POST", "/api/repos", { owner, name, autoIndex });
       if (!isRegisteredRepo(created)) {
@@ -145,7 +117,7 @@ const add = Command.make(
 const addLocal = Command.make("add-local", {}, () =>
   Effect.gen(function* () {
     const remoteUrl = yield* getOriginRemote();
-    const parsed = parseCloneUrlOwnerName(remoteUrl);
+    const parsed = parseOwnerName(remoteUrl);
     if (!parsed) {
       return yield* Effect.fail(
         new Error(`Could not parse a GitHub owner/repo from this remote: ${remoteUrl}`),
@@ -184,7 +156,7 @@ const remove = Command.make(
   { ownerRepo: ownerRepoArg, yes: yesOption },
   ({ ownerRepo, yes }) =>
     Effect.gen(function* () {
-      const { owner, name } = yield* parseOwnerName(ownerRepo);
+      const { owner, name } = yield* parseOwnerRepoArg(ownerRepo);
       const repo = yield* findRepo(owner, name);
 
       if (!yes) {
@@ -199,7 +171,10 @@ const remove = Command.make(
 
       yield* apiRequest("DELETE", `/api/repos/${repo.id}`);
       yield* Console.log(`Removed ${repo.owner}/${repo.name}.`);
-    }).pipe(Effect.tapError((error) => Console.error(error.message))),
+    }).pipe(
+      (effect) => onQuit(effect, "\nCancelled."),
+      Effect.tapError((error: Error | ApiError) => Console.error(error.message)),
+    ),
 ).pipe(Command.withDescription("Remove a repo from your org"));
 
 export const reposCommand = Command.make("repos").pipe(

@@ -23,12 +23,20 @@ export class ApiError extends Data.TaggedError("ApiError")<{
   readonly message: string;
 }> {}
 
-const parseErrorMessage = (body: unknown): string => {
+const parseErrorMessage = (body: unknown): string | undefined => {
   if (body && typeof body === "object" && "error" in body) {
     const value = (body as Record<string, unknown>).error;
     if (typeof value === "string" && value.length > 0) return value;
   }
-  return "Request failed";
+  return undefined;
+};
+
+const tryParseJson = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 };
 
 /** One authenticated call to the backend's existing `app/api/**` routes —
@@ -39,7 +47,7 @@ export const apiRequest = (
   method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
-): Effect.Effect<unknown, ApiError, HttpClient.HttpClient> =>
+): Effect.Effect<unknown, ApiError | Error, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const credentials = yield* loadCredentials();
     if (!credentials) {
@@ -61,11 +69,23 @@ export const apiRequest = (
     const response = yield* HttpClient.execute(request).pipe(
       Effect.mapError((cause) => new ApiError({ status: 0, message: `Network error: ${cause.message}` })),
     );
-    const json = yield* response.json.pipe(
+
+    if (response.status >= 400) {
+      // This app's own routes always answer errors as `{ error }` JSON
+      // (CLAUDE.md rule 1), but anything sitting in front of it — a proxy,
+      // load balancer, or WAF — can return a plain-text/HTML error page
+      // instead (a 502/503/504 is the common case). Read the body as text
+      // first so that case gets a real (if generic) message instead of
+      // "Invalid response from server," which would otherwise make "the
+      // app is down" look like "the app returned garbage."
+      const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+      const message =
+        (text.length > 0 ? parseErrorMessage(tryParseJson(text)) : undefined) ??
+        (text.trim().length > 0 ? text.trim().slice(0, 200) : `Request failed (${response.status})`);
+      return yield* Effect.fail(new ApiError({ status: response.status, message }));
+    }
+
+    return yield* response.json.pipe(
       Effect.mapError(() => new ApiError({ status: response.status, message: "Invalid response from server" })),
     );
-    if (response.status >= 400) {
-      return yield* Effect.fail(new ApiError({ status: response.status, message: parseErrorMessage(json) }));
-    }
-    return json;
   });

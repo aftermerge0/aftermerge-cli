@@ -103,51 +103,87 @@ async function writeFallbackCredentials(credentials: Credentials): Promise<void>
   await chmod(CREDENTIALS_PATH, 0o600);
 }
 
-export const saveCredentials = (credentials: Credentials): Effect.Effect<void> =>
-  Effect.promise(async () => {
-    const storedInKeyring = await keyringSet(credentials.token);
-    if (storedInKeyring) {
-      await writeBaseUrl(credentials.baseUrl);
-      // Don't leave the token sitting in the old plaintext location too.
-      await rm(CREDENTIALS_PATH, { force: true });
-    } else {
-      await writeFallbackCredentials(credentials);
-    }
-  });
+/** Reads the legacy plaintext file, migrating it into the keychain if one is
+ * available now (it may not have been when the file was written). Migration
+ * is a courtesy, never a requirement of the read: if `keyringSet` or the
+ * `config.json` write fails partway, the legacy file is left exactly as it
+ * was rather than deleted, so the NEXT read retries the migration instead of
+ * landing in a state neither path can recover from. */
+async function readLegacyCredentials(): Promise<Credentials | null> {
+  const legacyFile = Bun.file(CREDENTIALS_PATH);
+  if (!(await legacyFile.exists())) return null;
+  const legacy = (await legacyFile.json()) as Credentials;
 
-export const loadCredentials = (): Effect.Effect<Credentials | null> =>
-  Effect.promise(async () => {
-    const configFile = Bun.file(CONFIG_PATH);
-    if (await configFile.exists()) {
-      const { baseUrl } = (await configFile.json()) as StoredConfig;
-      const token = await keyringGet();
-      // config.json exists but the keychain entry doesn't (cleared outside
-      // the CLI, or a keyring daemon that's since become unavailable) —
-      // treat this the same as never having signed in, rather than
-      // silently falling back to a stale/missing file.
-      return token ? { baseUrl, token } : null;
-    }
-
-    // No config.json — either a fresh install, or a plaintext credentials
-    // file from before this version (or written because the keychain
-    // wasn't available at login time).
-    const legacyFile = Bun.file(CREDENTIALS_PATH);
-    if (!(await legacyFile.exists())) return null;
-    const legacy = (await legacyFile.json()) as Credentials;
-
-    // One-time migration: now that a keyring is available (it may not have
-    // been when this file was written), move the token in and stop keeping
-    // it in cleartext. No user-visible re-login required.
+  try {
     if (await keyringSet(legacy.token)) {
       await writeBaseUrl(legacy.baseUrl);
       await rm(CREDENTIALS_PATH, { force: true });
     }
-    return legacy;
+  } catch {
+    // Leave the legacy file in place — it's still valid and usable even if
+    // tidying it into the keychain didn't fully complete this time.
+  }
+  return legacy;
+}
+
+function toConfigError(cause: unknown, action: string): Error {
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  return new Error(
+    `Could not ${action} under ${CONFIG_DIR}: ${reason}. Run \`aftermerge auth logout\` to reset.`,
+  );
+}
+
+export const saveCredentials = (credentials: Credentials): Effect.Effect<void, Error> =>
+  Effect.tryPromise({
+    try: async () => {
+      const storedInKeyring = await keyringSet(credentials.token);
+      if (storedInKeyring) {
+        await writeBaseUrl(credentials.baseUrl);
+        // Don't leave the token sitting in the old plaintext location too.
+        await rm(CREDENTIALS_PATH, { force: true });
+      } else {
+        await writeFallbackCredentials(credentials);
+        // Symmetric cleanup: a STALE config.json from an earlier, successful
+        // keyring-based login must not survive a fallback save, or the next
+        // `loadCredentials` call finds it, fails to reach that earlier
+        // keyring entry (the same unavailable keyring that just caused this
+        // fallback), and reports "not signed in" — even though this save
+        // just printed "Signed in." Without this, a keyring that becomes
+        // unavailable after a prior login locks the user out permanently,
+        // recoverable only via `auth logout`.
+        await rm(CONFIG_PATH, { force: true });
+      }
+    },
+    catch: (cause) => toConfigError(cause, "save credentials"),
   });
 
-export const clearCredentials = (): Effect.Effect<void> =>
-  Effect.promise(async () => {
-    await keyringDelete();
-    await rm(CREDENTIALS_PATH, { force: true });
-    await rm(CONFIG_PATH, { force: true });
+export const loadCredentials = (): Effect.Effect<Credentials | null, Error> =>
+  Effect.tryPromise({
+    try: async () => {
+      const configFile = Bun.file(CONFIG_PATH);
+      if (await configFile.exists()) {
+        const { baseUrl } = (await configFile.json()) as StoredConfig;
+        const token = await keyringGet();
+        if (token) return { baseUrl, token };
+        // config.json exists but the keychain entry doesn't — this can mean
+        // the keyring is genuinely empty (cleared outside the CLI), or that
+        // it's just unavailable THIS session (e.g. a headless/SSH session
+        // with no unlocked Secret Service) while a more recent fallback save
+        // exists. Check the fallback file before concluding "not signed in."
+        return await readLegacyCredentials();
+      }
+
+      return await readLegacyCredentials();
+    },
+    catch: (cause) => toConfigError(cause, "read credentials"),
+  });
+
+export const clearCredentials = (): Effect.Effect<void, Error> =>
+  Effect.tryPromise({
+    try: async () => {
+      await keyringDelete();
+      await rm(CREDENTIALS_PATH, { force: true });
+      await rm(CONFIG_PATH, { force: true });
+    },
+    catch: (cause) => toConfigError(cause, "clear credentials"),
   });

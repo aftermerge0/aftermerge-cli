@@ -1,6 +1,6 @@
 import { Command, Options } from "@effect/cli";
 import { HttpClient, HttpClientRequest } from "@effect/platform";
-import { Console, Effect } from "effect";
+import { Console, Duration, Effect, Either } from "effect";
 import { openInBrowser } from "../browser.js";
 import { clearCredentials, loadCredentials, saveCredentials } from "../config.js";
 import { apiRequest, CLI_USER_AGENT } from "../http.js";
@@ -18,22 +18,45 @@ const serverOption = Options.text("server").pipe(
   ),
 );
 
+const MIN_POLL_INTERVAL_SECONDS = 1;
+const MAX_POLL_INTERVAL_SECONDS = 300;
+// This plugin's documented default code lifetime (README) — used only if a
+// server's response omits `expires_in` (RFC 8628 requires it, but nothing
+// stops a nonconforming server from leaving it out).
+const DEFAULT_EXPIRES_IN_SECONDS = 30 * 60;
+const MAX_EXPIRES_IN_SECONDS = 24 * 60 * 60;
+// RFC 8628 §3.5: on `slow_down`, the client MUST increase its poll interval
+// by at least 5 seconds for all subsequent requests — polling at the
+// unchanged rate is what triggers the rate limit in the first place.
+const SLOW_DOWN_INCREMENT_SECONDS = 5;
+// A single transient blip (a proxy 502, a momentary network error, one
+// malformed response) shouldn't kill the whole sign-in — only a server
+// that's persistently broken should.
+const MAX_CONSECUTIVE_TRANSIENT_FAILURES = 3;
+
 interface DeviceCodeResponse {
   readonly device_code: string;
   readonly user_code: string;
   readonly verification_uri_complete: string;
   readonly interval: number;
+  // Optional per the comment above, though RFC 8628 requires it — validated
+  // strictly when present rather than trusted blindly.
+  readonly expires_in?: number;
 }
 
 type DeviceTokenResult =
   | { readonly ok: true; readonly accessToken: string }
-  | { readonly ok: false; readonly retry: true }
+  | { readonly ok: false; readonly retry: true; readonly slowDown: boolean }
   | { readonly ok: false; readonly retry: false; readonly message: string };
 
-/** Guards against a malformed/malicious response before it's trusted —
- * `interval` in particular feeds `Effect.sleep` in `pollForToken`, and an
- * invalid duration string there would throw synchronously (an uncatchable
- * defect, not a normal Effect failure — see the parseUrl comment). */
+/** Guards against a malformed/malicious response before it's trusted.
+ * `interval`/`expires_in` in particular feed `pollForToken`'s sleep/timeout —
+ * bounding them here (not just checking they're positive numbers) is what
+ * actually closes the footgun: JS renders numbers outside roughly
+ * `[1e-6, 1e21)` in exponential notation (e.g. `"1e-7"`), which a
+ * template-string `Effect.sleep` duration rejects with an uncatchable
+ * defect. A `Number.isFinite(x) && x > 0` check alone does not catch this —
+ * `1e21` and `1e-7` both pass it. */
 const isValidDeviceCodeResponse = (value: unknown): value is DeviceCodeResponse => {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -45,8 +68,14 @@ const isValidDeviceCodeResponse = (value: unknown): value is DeviceCodeResponse 
     typeof v.verification_uri_complete === "string" &&
     v.verification_uri_complete.length > 0 &&
     typeof v.interval === "number" &&
-    Number.isFinite(v.interval) &&
-    v.interval > 0
+    Number.isInteger(v.interval) &&
+    v.interval >= MIN_POLL_INTERVAL_SECONDS &&
+    v.interval <= MAX_POLL_INTERVAL_SECONDS &&
+    (v.expires_in === undefined ||
+      (typeof v.expires_in === "number" &&
+        Number.isInteger(v.expires_in) &&
+        v.expires_in > 0 &&
+        v.expires_in <= MAX_EXPIRES_IN_SECONDS))
   );
 };
 
@@ -112,23 +141,56 @@ const pollOnce = (server: string, deviceCode: string): Effect.Effect<DeviceToken
       return { ok: true, accessToken: json.access_token };
     }
     if (json.error === "authorization_pending" || json.error === "slow_down") {
-      return { ok: false, retry: true };
+      return { ok: false, retry: true, slowDown: json.error === "slow_down" };
     }
     return { ok: false, retry: false, message: json.error_description ?? "Sign-in was not completed" };
   });
 
+/** Polls until the user approves/denies, the server reports a terminal
+ * error, or the device code's own expiry passes — whichever comes first.
+ * Two RFC 8628 requirements this previously missed entirely: the poll loop
+ * had no client-side deadline (termination depended 100% on the server
+ * eventually stopping `authorization_pending`), and `slow_down` was treated
+ * as a plain retry instead of §3.5's mandated interval increase. Also
+ * tolerates a single bad poll response instead of aborting the whole
+ * sign-in over one transient blip. */
 const pollForToken = (
   server: string,
   code: DeviceCodeResponse,
-): Effect.Effect<string, Error, HttpClient.HttpClient> =>
-  Effect.gen(function* () {
+): Effect.Effect<string, Error, HttpClient.HttpClient> => {
+  const deadline = Duration.seconds(code.expires_in ?? DEFAULT_EXPIRES_IN_SECONDS);
+
+  const poll = Effect.gen(function* () {
+    let interval = code.interval;
+    let consecutiveTransientFailures = 0;
+
     while (true) {
-      yield* Effect.sleep(`${code.interval} seconds`);
-      const result = yield* pollOnce(server, code.device_code);
-      if (result.ok) return result.accessToken;
-      if (!result.retry) return yield* Effect.fail(new Error(result.message));
+      yield* Effect.sleep(Duration.seconds(interval));
+
+      const result = yield* Effect.either(pollOnce(server, code.device_code));
+      if (Either.isLeft(result)) {
+        consecutiveTransientFailures++;
+        if (consecutiveTransientFailures > MAX_CONSECUTIVE_TRANSIENT_FAILURES) {
+          return yield* Effect.fail(result.left);
+        }
+        continue;
+      }
+      consecutiveTransientFailures = 0;
+
+      const value = result.right;
+      if (value.ok) return value.accessToken;
+      if (!value.retry) return yield* Effect.fail(new Error(value.message));
+      if (value.slowDown) interval += SLOW_DOWN_INCREMENT_SECONDS;
     }
   });
+
+  return poll.pipe(
+    Effect.timeoutFail({
+      duration: deadline,
+      onTimeout: () => new Error("Sign-in code expired before it was approved. Run `aftermerge auth login` again."),
+    }),
+  );
+};
 
 const login = Command.make("login", { server: serverOption }, ({ server }) =>
   Effect.gen(function* () {
@@ -179,7 +241,7 @@ const logout = Command.make("logout", {}, () =>
   Effect.gen(function* () {
     yield* clearCredentials();
     yield* Console.log("Signed out.");
-  }),
+  }).pipe(Effect.tapError((error) => Console.error(error.message))),
 ).pipe(Command.withDescription("Sign out and remove the stored credentials"));
 
 export const authCommand = Command.make("auth").pipe(

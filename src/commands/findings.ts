@@ -1,23 +1,11 @@
 import { Args, Command } from "@effect/cli";
 import { Console, Effect } from "effect";
 import { apiRequest, ApiError } from "../http.js";
+import { isFinding } from "../api-types.js";
 
 const runIdArg = Args.text({ name: "run-id" }).pipe(
   Args.withDescription("Analysis run id (printed by `aftermerge analyze`)"),
 );
-
-interface Finding {
-  readonly title: string;
-  readonly severity: string;
-  readonly band: string;
-  readonly description: string;
-}
-
-const isFinding = (value: unknown): value is Finding => {
-  if (!value || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return typeof v.title === "string" && typeof v.severity === "string" && typeof v.band === "string";
-};
 
 const list = Command.make("list", { runId: runIdArg }, ({ runId }) =>
   Effect.gen(function* () {

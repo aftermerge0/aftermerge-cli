@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
 import { Effect } from "effect";
 
-const MAX_FILE_BYTES = 500_000; // matches the server's per-file cap (app/api/ingest/upload/route.ts)
+/** Generic, product-agnostic git plumbing — reading the local checkout's
+ * remote/branch/commit state. Scan-specific content archival lives in
+ * `upload.ts`, kept separate so this file stays reusable git wrapping with
+ * no opinion about what any particular command does with it. */
 
 const runGit = (args: string[]): Effect.Effect<string, Error> =>
   Effect.tryPromise({
@@ -22,18 +22,60 @@ const runGit = (args: string[]): Effect.Effect<string, Error> =>
     catch: (cause) => (cause instanceof Error ? cause : new Error(`Could not run git ${args.join(" ")}.`)),
   });
 
-/** Normalizes a git remote / stored clone URL (SSH or HTTPS, with or without
- * `.git`) to one comparable form — `cloneUrl` is always stored as GitHub's
- * `https://…/owner/repo.git` (Octokit's `clone_url`, see
- * app/api/repos/discover/route.ts), while `git remote get-url origin` can be
- * either form depending on how the user cloned. */
-export const normalizeCloneUrl = (url: string): string =>
+/** Runs a git subcommand and returns its raw (untrimmed) stdout as a
+ * `Buffer` — for callers reading structured/`-z`-terminated or binary output
+ * where trimming or UTF-8 text decoding would be wrong. */
+const runGitRawBytes = (args: string[]): Effect.Effect<Buffer, Error> =>
+  Effect.tryPromise({
+    try: async () => {
+      const proc = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe" });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).arrayBuffer(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      if (exitCode !== 0) {
+        throw new Error(stderr.trim() || `git ${args.join(" ")} failed`);
+      }
+      return Buffer.from(stdout);
+    },
+    catch: (cause) => (cause instanceof Error ? cause : new Error(`Could not run git ${args.join(" ")}.`)),
+  });
+
+/** A ref string starting with `-` would otherwise be handed straight to git
+ * as a positional argument and can be misread as a flag (e.g. a `--base`
+ * value of `--upload-pack=...`) — not a privilege boundary (this only ever
+ * runs against the user's own local checkout), but it silently produces
+ * confusing/wrong results instead of the clear error a mistyped ref should
+ * get. Every function below that takes a caller-supplied ref checks this
+ * before it reaches a git invocation. */
+function assertNotOptionLike(ref: string): Effect.Effect<void, Error> {
+  if (ref.startsWith("-")) {
+    return Effect.fail(new Error(`'${ref}' is not a valid ref (it looks like a flag, not a branch/commit).`));
+  }
+  return Effect.void;
+}
+
+/** Normalizes a git remote / stored clone URL (SSH scp-style, `ssh://`, or
+ * HTTPS, with or without `.git`) to one comparable, case-insensitive form —
+ * `cloneUrl` is always stored as GitHub's `https://…/owner/repo.git`
+ * (Octokit's `clone_url`, see app/api/repos/discover/route.ts), while `git
+ * remote get-url origin` can be any of the forms above depending on how the
+ * user cloned. Order matters: the trailing-slash strip must run BEFORE the
+ * `.git` strip, or `.../Widgets.git/` and `.../Widgets.git` normalize to
+ * different strings (the former only had its slash stripped, never its
+ * `.git`, since `/\.git$/` no longer matches once a trailing `/` is in the
+ * way — this was a real bug: those two forms of the same URL failed to
+ * match each other). */
+const normalizeCloneUrlPreservingCase = (url: string): string =>
   url
     .trim()
     .replace(/^git@([^:]+):/, "https://$1/")
-    .replace(/\.git$/, "")
+    .replace(/^ssh:\/\/(?:[^@/]+@)?/, "https://")
     .replace(/\/$/, "")
-    .toLowerCase();
+    .replace(/\.git$/, "");
+
+export const normalizeCloneUrl = (url: string): string => normalizeCloneUrlPreservingCase(url).toLowerCase();
 
 export const getOriginRemote = (): Effect.Effect<string, Error> =>
   runGit(["remote", "get-url", "origin"]).pipe(
@@ -41,9 +83,14 @@ export const getOriginRemote = (): Effect.Effect<string, Error> =>
   );
 
 /** owner/name parsed from a GitHub clone URL, e.g.
- * "https://github.com/acme/widgets" → { owner: "acme", name: "widgets" }. */
+ * "https://github.com/acme/widgets" → { owner: "acme", name: "widgets" }.
+ * Matches against the case-PRESERVING normalization, not `normalizeCloneUrl`
+ * — the latter lowercases for case-insensitive comparison elsewhere, and
+ * matching against it here silently registered every repo under a
+ * lowercased owner/name (e.g. "Acme/Widgets" stored as "acme/widgets"),
+ * corrupting the org's actual repo listing. */
 export const parseOwnerName = (cloneUrl: string): { owner: string; name: string } | null => {
-  const match = normalizeCloneUrl(cloneUrl).match(/github\.com\/([^/]+)\/([^/]+)$/);
+  const match = normalizeCloneUrlPreservingCase(cloneUrl).match(/github\.com\/([^/]+)\/([^/]+)$/i);
   if (!match) return null;
   return { owner: match[1], name: match[2] };
 };
@@ -52,9 +99,12 @@ export const getCurrentBranch = (): Effect.Effect<string, Error> =>
   runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
 
 export const resolveCommitSha = (ref: string): Effect.Effect<string, Error> =>
-  runGit(["rev-parse", ref]).pipe(
-    Effect.mapError(() => new Error(`'${ref}' is not a valid local ref (branch/commit).`)),
-  );
+  Effect.gen(function* () {
+    yield* assertNotOptionLike(ref);
+    return yield* runGit(["rev-parse", ref]).pipe(
+      Effect.mapError(() => new Error(`'${ref}' is not a valid local ref (branch/commit).`)),
+    );
+  });
 
 /** The remote's default branch, from the local clone's own record of it
  * (`refs/remotes/origin/HEAD`, set by a normal `git clone` — no network
@@ -66,57 +116,7 @@ export const getDefaultBranch = (): Effect.Effect<string, Error> =>
     Effect.orElse(() => getCurrentBranch()),
   );
 
-export interface ArchivedFile {
-  readonly path: string;
-  readonly content: string;
-}
-
-/**
- * Every tracked file's content AT a given commit (not the working tree —
- * `git archive` reads from git's committed history, so uncommitted local
- * edits are never included, matching "analyze commit <sha>" semantics
- * exactly, for both the head and base ref). No file-selection/filtering
- * logic here by design (plan 149 §1.D) — the server applies the real rules
- * after upload; this only excludes what any generic uploader would (binary
- * content that isn't valid UTF-8 text, and anything over the server's own
- * per-file size cap, so an oversized file fails fast locally instead of
- * after a slow upload).
- */
-export const archiveFilesAtRef = (ref: string): Effect.Effect<ArchivedFile[], Error> =>
-  Effect.acquireUseRelease(
-    Effect.tryPromise({
-      try: () => mkdtemp(join(tmpdir(), "aftermerge-archive-")),
-      catch: (cause) => (cause instanceof Error ? cause : new Error("Could not create a temp directory.")),
-    }),
-    (dir) =>
-      Effect.gen(function* () {
-        yield* Effect.tryPromise({
-          try: async () => {
-            await Bun.$`git archive ${ref} | tar -x -C ${dir}`.quiet();
-          },
-          catch: (cause) =>
-            cause instanceof Error ? cause : new Error(`Could not read '${ref}' from git history.`),
-        });
-
-        const listed = yield* runGit(["ls-tree", "-r", "--name-only", ref]);
-        const paths = listed.split("\n").filter(Boolean);
-
-        const files: ArchivedFile[] = [];
-        for (const path of paths) {
-          const bytes = yield* Effect.tryPromise({
-            try: () => readFile(join(dir, path)),
-            catch: (cause) =>
-              cause instanceof Error ? cause : new Error(`Could not read extracted file '${path}'.`),
-          });
-          if (bytes.byteLength > MAX_FILE_BYTES) continue;
-          const content = bytes.toString("utf8");
-          // Round-trip check: a file that isn't valid UTF-8 text re-encodes
-          // to something of a different byte length (replacement characters
-          // aren't 1:1) — skip it rather than upload corrupted content.
-          if (Buffer.byteLength(content, "utf8") !== bytes.byteLength) continue;
-          files.push({ path: relative(dir, join(dir, path)), content });
-        }
-        return files;
-      }),
-    (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
-  );
+/** Internal export for `upload.ts`, which needs to list/read blobs at a ref
+ * — kept here rather than duplicated since it's still generic git plumbing,
+ * just lower-level than the rest of this file's public surface. */
+export const gitInternals = { runGit, runGitRawBytes, assertNotOptionLike };
