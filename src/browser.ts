@@ -23,7 +23,14 @@ export const openInBrowser = (url: string): Effect.Effect<void> =>
         process.platform === "darwin"
           ? ["open", target]
           : process.platform === "win32"
-            ? ["cmd", "/c", "start", "", target]
+            ? // NOT `["cmd", "/c", "start", "", target]` — `cmd.exe` parses its
+              // own command line for `&`/`|`/`^` as separators/pipes
+              // independent of argv-quoting (the "BatBadBut"/CVE-2024-27980
+              // class of Windows footgun), and those characters survive
+              // WHATWG URL serialization unescaped. `rundll32` opens the URL
+              // via the shell's URL handler directly, with no command-line
+              // shell in between to reinterpret it.
+              ["rundll32", "url.dll,FileProtocolHandler", target]
             : ["xdg-open", target];
       const proc = Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
       await proc.exited;
