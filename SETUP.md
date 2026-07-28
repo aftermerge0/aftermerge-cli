@@ -4,17 +4,33 @@ This is the practical install guide: how to get a global `aftermerge` command
 on your machine. For what each command does once it's installed, see the
 [command reference in the README](README.md#command-reference).
 
-## Prerequisites
+## Option A — standalone binary via curl (no Bun required)
 
-- [Bun](https://bun.sh) 1.x. Install with `curl -fsSL https://bun.sh/install | bash`,
-  then confirm with `bun --version`.
-- Git.
+`.github/workflows/release.yml` builds a standalone executable per
+OS/arch with `bun build --compile` on every pushed `v*` tag, and attaches
+each one to the GitHub Release. `install.sh` (in the repo root) detects your
+OS/arch, downloads the matching binary from the latest release, and drops it
+in `~/.aftermerge/bin` (override with `AFTERMERGE_INSTALL_DIR`).
 
-## Option A — global command via `bun link` (works today)
+```sh
+curl -fsSL https://raw.githubusercontent.com/aftermerge0/aftermerge-cli/main/install.sh | sh
+```
 
-The package already declares a `bin` entry (`aftermerge` →
-`src/index.ts`), so `bun link` registers it as a real global command without
-waiting on any future packaging step.
+If `~/.aftermerge/bin` isn't already on your `PATH`, the script prints the
+`export PATH=...` line to add to your shell profile — it never edits your
+shell config for you.
+
+Supported today: macOS (arm64/x64) and Linux (x64/arm64). No Windows binary
+yet — use Option B or C below on Windows.
+
+To remove it later, just delete the binary: `rm ~/.aftermerge/bin/aftermerge`
+(or wherever `AFTERMERGE_INSTALL_DIR` pointed).
+
+## Option B — global command via `bun link`
+
+Requires [Bun](https://bun.sh) 1.x (`curl -fsSL https://bun.sh/install | bash`)
+and Git. The package already declares a `bin` entry (`aftermerge` →
+`src/index.ts`), so `bun link` registers it as a real global command.
 
 ```sh
 git clone git@github.com:aftermerge0/aftermerge-cli.git
@@ -42,9 +58,10 @@ bun unlink aftermerge-cli   # from anywhere
 cd aftermerge-cli && bun unlink
 ```
 
-## Option B — run from source, no global install
+## Option C — run from source, no global install
 
-If you'd rather not touch your global bin dir (e.g. CI, a one-off check):
+If you'd rather not touch your global bin dir (e.g. CI, a one-off check),
+requires Bun as in Option B:
 
 ```sh
 git clone git@github.com:aftermerge0/aftermerge-cli.git
@@ -52,15 +69,6 @@ cd aftermerge-cli
 bun install
 bun run src/index.ts <command> [args]
 ```
-
-## Option C — standalone compiled binary (not yet available)
-
-`bun build --compile` can produce a single self-contained executable with no
-Bun runtime dependency, distributable via a GitHub release, Homebrew tap,
-etc. This packaging step is deferred — not implemented yet — so it isn't a
-supported install path today. Option A is the closest equivalent in the
-meantime: a real global `aftermerge` command, just one that still requires
-Bun to be installed.
 
 ## First run
 

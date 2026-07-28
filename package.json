@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "compile": "bun build --compile --outfile dist/aftermerge ./src/index.ts"
   },
   "dependencies": {
     "@effect/cli": "^0.76.0",

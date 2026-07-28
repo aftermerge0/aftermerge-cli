@@ -19,7 +19,13 @@ analysis checks the web dashboard runs, without leaving your shell.
 
 ## Installation
 
-**Prerequisites:** [Bun](https://bun.sh) 1.x and Git.
+**macOS / Linux** — no Bun runtime required, installs a standalone binary:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aftermerge0/aftermerge-cli/main/install.sh | sh
+```
+
+**From source** (any platform Bun supports) — requires [Bun](https://bun.sh) 1.x and Git:
 
 ```sh
 git clone git@github.com:aftermerge0/aftermerge-cli.git
@@ -28,18 +34,14 @@ bun install
 bun link
 ```
 
-Verify it's on your `PATH`:
+Either way, verify it's on your `PATH`:
 
 ```sh
 aftermerge --version
 ```
 
-That's it — `aftermerge` is now a global command. See [SETUP.md](SETUP.md)
-for the full walkthrough, including how to run it straight from source
-without a global install, and how to uninstall.
-
-A standalone compiled binary (no Bun runtime required) is deferred and isn't
-available yet — `bun link` is the supported install path today.
+See [SETUP.md](SETUP.md) for the full walkthrough of both install paths,
+running from source without installing globally, and uninstalling.
 
 ## Quick start
 

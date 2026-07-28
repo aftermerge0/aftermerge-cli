@@ -1,0 +1,54 @@
+name: Release
+
+# Fires on any pushed tag matching v* (e.g. v0.1.0). Each matrix job compiles
+# a standalone binary natively on its own OS/arch runner — no cross-compile
+# target strings to keep in sync with bun's own list, just "run bun build
+# --compile on the platform we're shipping for."
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14 # Apple Silicon
+            asset: aftermerge-darwin-arm64
+          - os: macos-13 # Intel
+            asset: aftermerge-darwin-x64
+          - os: ubuntu-latest
+            asset: aftermerge-linux-x64
+          - os: ubuntu-24.04-arm
+            asset: aftermerge-linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun build --compile --outfile ${{ matrix.asset }} ./src/index.ts
+      - run: chmod +x ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - run: chmod +x artifacts/*
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
