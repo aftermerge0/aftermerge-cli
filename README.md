@@ -3,28 +3,54 @@
 A terminal client for AfterMerge — sign in once, then run the same PR
 analysis checks the web dashboard runs, without leaving your shell.
 
-This is a **reference for using the commands**. For how the CLI is built and
-why it's architected this way, see `plans/145-cli-device-auth-and-terminal-
-client.md` (the implementation plan) and `plans/146-cli-architecture-deep-
-dive.md` (a from-scratch explanation of the design, written for someone new
-to CLI/auth engineering).
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
----
+## Table of contents
 
-## Install / run
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Command reference](#command-reference)
+- [Global behavior](#global-behavior-every-command-gets-these-for-free)
+- [Exit codes](#exit-codes)
+- [Where your credentials live](#where-your-credentials-live)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
 
-The CLI is not yet packaged as a standalone binary (that's deferred — see
-plan 145 §"Explicitly deferred"). For now, run it from source with Bun:
+## Installation
+
+**Prerequisites:** [Bun](https://bun.sh) 1.x and Git.
 
 ```sh
-cd cli
+git clone git@github.com:aftermerge0/aftermerge-cli.git
+cd aftermerge-cli
 bun install
-bun run src/index.ts <command> [args]
+bun link
 ```
 
-Every example below assumes you're running from inside `cli/` this way. Once
-`bun build --compile` packaging lands, the same commands will work as
-`aftermerge <command> [args]` from anywhere.
+Verify it's on your `PATH`:
+
+```sh
+aftermerge --version
+```
+
+That's it — `aftermerge` is now a global command. See [SETUP.md](SETUP.md)
+for the full walkthrough, including how to run it straight from source
+without a global install, and how to uninstall.
+
+A standalone compiled binary (no Bun runtime required) is deferred and isn't
+available yet — `bun link` is the supported install path today.
+
+## Quick start
+
+```sh
+aftermerge auth login --server https://your-instance.example.com
+aftermerge repos add-local     # or: repos add <owner/name>, from the web dashboard
+aftermerge scan                # or: analyze --pr <number>
+```
+
+Every command below assumes `aftermerge` is on your `PATH` per
+[Installation](#installation) above.
 
 ---
 
@@ -35,7 +61,7 @@ Every example below assumes you're running from inside `cli/` this way. Once
 Signs you in via your browser. Required before any other command works.
 
 ```sh
-bun run src/index.ts auth login [--server <url>]
+aftermerge auth login [--server <url>]
 ```
 
 | Flag | Default | Meaning |
@@ -56,7 +82,7 @@ What happens:
 Example:
 
 ```
-$ bun run src/index.ts auth login --server https://app.aftermerge.dev
+$ aftermerge auth login --server https://app.aftermerge.dev
 
   Code: WDJB-MKRS
   Visit: https://app.aftermerge.dev/device?user_code=WDJB-MKRS
@@ -73,11 +99,11 @@ prints the reason and exits non-zero.
 Shows who you're currently signed in as.
 
 ```sh
-bun run src/index.ts auth whoami
+aftermerge auth whoami
 ```
 
 ```
-$ bun run src/index.ts auth whoami
+$ aftermerge auth whoami
 Signed in as Jane Doe (jane@example.com)
 Organization: org_a1b2c3
 Server: https://app.aftermerge.dev
@@ -87,7 +113,7 @@ If you're not signed in (or your session has expired), it says so and exits
 non-zero — safe to use in a script as a preflight check:
 
 ```sh
-bun run src/index.ts auth whoami > /dev/null 2>&1 || bun run src/index.ts auth login
+aftermerge auth whoami > /dev/null 2>&1 || aftermerge auth login
 ```
 
 ### `auth logout`
@@ -96,7 +122,7 @@ Deletes your locally stored credentials. Does not need network access; this
 only removes the local file, it doesn't revoke the session server-side.
 
 ```sh
-bun run src/index.ts auth logout
+aftermerge auth logout
 ```
 
 ---
@@ -107,7 +133,7 @@ Triggers the same PR analysis pipeline the web dashboard runs, for the repo
 in your current directory.
 
 ```sh
-bun run src/index.ts analyze --pr <number>
+aftermerge analyze --pr <number>
 ```
 
 | Flag | Required | Meaning |
@@ -132,7 +158,7 @@ What happens after the repo is matched:
 Example — a full successful run:
 
 ```
-$ bun run src/index.ts analyze --pr 128
+$ aftermerge analyze --pr 128
 Starting analysis for acme/billing-service PR #128...
   running...
   running...
@@ -147,7 +173,7 @@ Starting analysis for acme/billing-service PR #128...
 Example — repo not connected yet:
 
 ```
-$ bun run src/index.ts analyze --pr 1
+$ aftermerge analyze --pr 1
 This repo isn't connected yet. Connect it from the web dashboard first, then try again.
 ```
 (exits non-zero)
@@ -155,7 +181,7 @@ This repo isn't connected yet. Connect it from the web dashboard first, then try
 Example — hitting a plan limit:
 
 ```
-$ bun run src/index.ts analyze --pr 200
+$ aftermerge analyze --pr 200
 Starting analysis for acme/billing-service PR #200...
 Monthly analysis run limit: plan limit of 25 would be exceeded (currently 25, adding 1). Upgrade your plan to continue.
 ```
@@ -174,7 +200,7 @@ checkout. No GitHub token is ever required or sent, for either registering
 the repo (see `repos add-local` below) or running the analysis.
 
 ```sh
-bun run src/index.ts scan [--base <ref>]
+aftermerge scan [--base <ref>]
 ```
 
 | Flag | Required | Meaning |
@@ -203,7 +229,7 @@ What happens:
 Example:
 
 ```
-$ bun run src/index.ts scan --base main
+$ aftermerge scan --base main
 Reading main (base)...
 Uploading and indexing main (482 files)...
 Reading my-feature-branch (head)...
@@ -234,11 +260,11 @@ Notes:
 Lists every repo connected to your organization.
 
 ```sh
-bun run src/index.ts repos list
+aftermerge repos list
 ```
 
 ```
-$ bun run src/index.ts repos list
+$ aftermerge repos list
 acme/billing-service  (7f3e1c9a-...)
 acme/frontend         (9b2d4e11-...)
 ```
@@ -258,7 +284,7 @@ still talks to GitHub to fetch the repo's real metadata; for a token-free
 alternative see `repos add-local` below).
 
 ```sh
-bun run src/index.ts repos add <owner/name> [--branch <name>] [--auto-index]
+aftermerge repos add <owner/name> [--branch <name>] [--auto-index]
 ```
 
 | Flag | Required | Meaning |
@@ -267,7 +293,7 @@ bun run src/index.ts repos add <owner/name> [--branch <name>] [--auto-index]
 | `--auto-index` | no | Index the default branch immediately after registering (uses analysis/LLM budget — off by default, same as the web dashboard). |
 
 ```
-$ bun run src/index.ts repos add acme/billing-service
+$ aftermerge repos add acme/billing-service
 Registered acme/billing-service  (7f3e1c9a-...)
 Default branch: main
 ```
@@ -282,11 +308,11 @@ can run against a repo. Subject to the same seat/plan limit as `repos add`
 each one's metadata was sourced).
 
 ```sh
-bun run src/index.ts repos add-local
+aftermerge repos add-local
 ```
 
 ```
-$ bun run src/index.ts repos add-local
+$ aftermerge repos add-local
 Registered acme/billing-service  (7f3e1c9a-...)
 Default branch: main
 ```
@@ -297,11 +323,11 @@ Removes a repo from your org (soft-deleted; frees the org's repo-count seat
 immediately). Prompts for confirmation unless `--yes`/`-y` is passed.
 
 ```sh
-bun run src/index.ts repos remove <owner/name> [--yes]
+aftermerge repos remove <owner/name> [--yes]
 ```
 
 ```
-$ bun run src/index.ts repos remove acme/billing-service
+$ aftermerge repos remove acme/billing-service
 Remove acme/billing-service from your org? (y/N) y
 Removed acme/billing-service.
 ```
@@ -316,14 +342,14 @@ Pressing **Ctrl+C** at the confirmation prompt cancels cleanly (prints
 Lists every finding for a specific analysis run, by run id.
 
 ```sh
-bun run src/index.ts findings list <run-id>
+aftermerge findings list <run-id>
 ```
 
 `<run-id>` is a positional argument — the id printed by `analyze`, or found
 in the web dashboard's run URL.
 
 ```
-$ bun run src/index.ts findings list a1b2c3d4-...
+$ aftermerge findings list a1b2c3d4-...
 [high/high-confidence] Missing null check on payment webhook
   The webhook handler dereferences `event.data.object` without checking...
 [medium/medium-confidence] Race condition in cache invalidation
@@ -338,11 +364,11 @@ An interactive chat session with your repo's knowledge graph — the same
 underlying chat the web dashboard offers, in your terminal.
 
 ```sh
-bun run src/index.ts chat
+aftermerge chat
 ```
 
 ```
-$ bun run src/index.ts chat
+$ aftermerge chat
 Chatting — type a message, or 'exit' to quit.
 
 You: what routes does the billing service expose?
@@ -362,7 +388,7 @@ Notes and current limitations (v1 scope, documented rather than hidden):
   calls (e.g. "search the code graph") and reasoning steps — the CLI
   currently only extracts and prints text content, so a response that leans
   heavily on tool calls may print less than you'd see on the web dashboard.
-  This is a known, intentional v1 gap (see plan 146 §6.4), not a bug.
+  This is a known, intentional v1 gap, not a bug.
 - Pressing **Ctrl+C** exits cleanly (exit code 0) — this is treated as a
   deliberate quit, not an error, even though the mechanism (a special
   "quit" signal from the terminal library) is technically an exceptional
@@ -424,8 +450,8 @@ fallback file — no re-login required.
 `auth logout` clears the token from wherever it's actually stored (keychain
 and/or fallback file) and removes both local files. There is currently no
 support for being signed into more than one server/org at a time from the
-same machine (see plan 145's deferred list) — logging into a different
-server overwrites the previous credentials.
+same machine — logging into a different server overwrites the previous
+credentials.
 
 ## Troubleshooting
 
@@ -456,3 +482,14 @@ server never returns a terminal status (`completed`/`failed`/`cancelled`)
 for a run; this mirrors the web dashboard's own behavior (it polls
 indefinitely too) rather than guessing at a timeout. If you believe a run is
 stuck, check it in the web dashboard directly.
+
+## Contributing
+
+Bug reports and pull requests are welcome — open an issue or PR against
+[aftermerge0/aftermerge-cli](https://github.com/aftermerge0/aftermerge-cli).
+See [SETUP.md](SETUP.md) for running the CLI from source, and run
+`bun run typecheck` and `bun run lint` before submitting a change.
+
+## License
+
+[MIT](LICENSE)

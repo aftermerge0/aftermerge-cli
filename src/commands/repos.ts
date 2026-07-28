@@ -107,7 +107,7 @@ const add = Command.make(
     }).pipe(Effect.tapError((error: Error | ApiError) => Console.error(error.message))),
 ).pipe(Command.withDescription("Register a repo with your org (same plan/seat checks as the web dashboard)"));
 
-/** Wraps POST /api/repos/local (plan 149) — registers the repo in the
+/** Wraps POST /api/repos/local — registers the repo in the
  * CURRENT directory without ever sending us a GitHub token. Every field
  * (`owner`/`name`/`cloneUrl`/`defaultBranch`) is derived from the local git
  * checkout, not a GitHub API call: `defaultBranch` in particular comes from

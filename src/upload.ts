@@ -2,10 +2,10 @@ import { Console, Effect } from "effect";
 import { gitInternals } from "./git.js";
 
 /** Reads every tracked, plain-file blob at a git ref, for `scan`'s
- * credential-free upload (plan 149). Deliberately does zero file-selection
+ * credential-free upload. Deliberately does zero file-selection
  * (extension allowlists, directory exclusions, "what's worth analyzing") —
- * that's the server's real IP (`select.ts`), never duplicated into the CLI
- * (plan 149 §1.D). This file only decides what a GENERIC uploader must
+ * that's the server's real IP (`select.ts`), never duplicated into the CLI.
+ * This file only decides what a GENERIC uploader must
  * exclude: things that aren't file content at all (submodules, symlinks),
  * and content that can't be safely represented as one JSON string (invalid
  * UTF-8, oversized files).

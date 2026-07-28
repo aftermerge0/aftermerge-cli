@@ -14,13 +14,13 @@ const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const CREDENTIALS_PATH = join(CONFIG_DIR, "credentials.json");
 
 const KEYRING_SERVICE = "aftermerge-cli";
-// v1 supports exactly one signed-in server at a time (plan 145 §6's
-// deferred multi-org/multi-server list) — a single fixed account name is
-// sufficient; logging into a different server overwrites this entry, same
-// as it overwrote the old plaintext file.
+// v1 supports exactly one signed-in server at a time (multi-org/multi-server
+// support is deferred) — a single fixed account name is sufficient; logging
+// into a different server overwrites this entry, same as it overwrote the
+// old plaintext file.
 const KEYRING_ACCOUNT = "default";
 
-/** Plan 145 v1: bearer token only, stored locally, never on our servers.
+/** v1: bearer token only, stored locally, never on our servers.
  * `baseUrl` travels with it so a login against a non-default server
  * (self-hosted / local dev) doesn't need to be re-specified on every command. */
 export interface Credentials {

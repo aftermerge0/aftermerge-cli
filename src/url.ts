@@ -18,7 +18,7 @@ export const parseUrl = (path: string, base: string): Effect.Effect<URL, Error> 
 
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-/** Plan 147 §1 — refuse to send the session bearer token in cleartext.
+/** Refuse to send the session bearer token in cleartext.
  * `--server` accepts either an `https:` origin or a loopback host (the
  * default local-dev flow, `http://localhost:3000`, never leaves the
  * machine so it's exempt). Anything else over plain `http://` would put the
