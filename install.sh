@@ -31,7 +31,15 @@ arch() {
   esac
 }
 
-ASSET="aftermerge-$(os)-$(arch)"
+OS="$(os)"
+ARCH="$(arch)"
+
+if [ "$OS" = "darwin" ] && [ "$ARCH" = "x64" ]; then
+  echo "error: no prebuilt binary for Intel Macs (GitHub's Intel-Mac Actions runners aren't reliably available). Use 'bun link' or run from source instead — see SETUP.md." >&2
+  exit 1
+fi
+
+ASSET="aftermerge-$OS-$ARCH"
 URL="https://github.com/$REPO/releases/latest/download/$ASSET"
 
 echo "Downloading $ASSET..."

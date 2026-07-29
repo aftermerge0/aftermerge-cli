@@ -20,8 +20,11 @@ If `~/.aftermerge/bin` isn't already on your `PATH`, the script prints the
 `export PATH=...` line to add to your shell profile — it never edits your
 shell config for you.
 
-Supported today: macOS (arm64/x64) and Linux (x64/arm64). No Windows binary
-yet — use Option B or C below on Windows.
+Supported today: macOS (Apple Silicon / arm64 only) and Linux (x64/arm64).
+No Intel Mac binary — GitHub's hosted Intel-Mac Actions runners aren't
+reliably available (a build job sat queued for 9+ hours and was never
+picked up), so that job was dropped from the release workflow. No Windows
+binary either. Intel Mac and Windows users should use Option B or C below.
 
 To remove it later, just delete the binary: `rm ~/.aftermerge/bin/aftermerge`
 (or wherever `AFTERMERGE_INSTALL_DIR` pointed).

@@ -19,7 +19,7 @@ analysis checks the web dashboard runs, without leaving your shell.
 
 ## Installation
 
-**macOS / Linux** — no Bun runtime required, installs a standalone binary:
+**macOS (Apple Silicon) / Linux** — no Bun runtime required, installs a standalone binary:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/aftermerge0/aftermerge-cli/main/install.sh | sh

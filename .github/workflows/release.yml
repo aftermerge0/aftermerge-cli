@@ -17,10 +17,12 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-14 # Apple Silicon
+          - os: macos-14 # Apple Silicon. No Intel (macos-13) job: GitHub's
+            # hosted Intel-Mac runner pool is small enough that jobs can sit
+            # queued for many hours with no guarantee of ever being picked
+            # up (observed: 9h, never started). Intel Mac users fall back to
+            # `bun link` / running from source — see SETUP.md.
             asset: aftermerge-darwin-arm64
-          - os: macos-13 # Intel
-            asset: aftermerge-darwin-x64
           - os: ubuntu-latest
             asset: aftermerge-linux-x64
           - os: ubuntu-24.04-arm
