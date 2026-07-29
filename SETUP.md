@@ -16,9 +16,21 @@ in `~/.aftermerge/bin` (override with `AFTERMERGE_INSTALL_DIR`).
 curl -fsSL https://raw.githubusercontent.com/aftermerge0/aftermerge-cli/main/install.sh | sh
 ```
 
-If `~/.aftermerge/bin` isn't already on your `PATH`, the script prints the
-`export PATH=...` line to add to your shell profile — it never edits your
-shell config for you.
+If `~/.aftermerge/bin` isn't already on your `PATH`, the script prints an
+`export PATH=...` line — it never edits your shell config for you. Add it
+yourself, matching your shell:
+
+```sh
+# zsh (default on modern macOS)
+echo 'export PATH="$HOME/.aftermerge/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+
+# bash
+echo 'export PATH="$HOME/.aftermerge/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Then confirm with `aftermerge --version`.
 
 Supported today: macOS (Apple Silicon / arm64 only) and Linux (x64/arm64).
 No Intel Mac binary — GitHub's hosted Intel-Mac Actions runners aren't
