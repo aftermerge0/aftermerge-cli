@@ -46,7 +46,7 @@ running from source without installing globally, and uninstalling.
 ## Quick start
 
 ```sh
-aftermerge auth login --server https://your-instance.example.com
+aftermerge auth login          # defaults to https://www.aftermerge.dev; pass --server for a self-hosted instance
 aftermerge repos add-local     # or: repos add <owner/name>, from the web dashboard
 aftermerge scan                # or: analyze --pr <number>
 ```
@@ -68,7 +68,7 @@ aftermerge auth login [--server <url>]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--server` | `http://localhost:3000` | Base URL of your AfterMerge deployment. Point this at a real deployment with `--server https://your-instance.example.com`. Must be `https://`, or `localhost`/`127.0.0.1`/`[::1]` for local dev — a plain-`http://` non-local server is rejected outright, since your session token would otherwise be sent in cleartext. |
+| `--server` | `https://www.aftermerge.dev` | Base URL of your AfterMerge deployment. Point this at a self-hosted instance with `--server https://your-instance.example.com`, or at a local dev server with `--server http://localhost:3000`. Must be `https://`, or `localhost`/`127.0.0.1`/`[::1]` for local dev — a plain-`http://` non-local server is rejected outright, since your session token would otherwise be sent in cleartext. |
 
 What happens:
 
@@ -84,10 +84,10 @@ What happens:
 Example:
 
 ```
-$ aftermerge auth login --server https://app.aftermerge.dev
+$ aftermerge auth login
 
   Code: WDJB-MKRS
-  Visit: https://app.aftermerge.dev/device?user_code=WDJB-MKRS
+  Visit: https://www.aftermerge.dev/device?user_code=WDJB-MKRS
 
 Opening your browser — waiting for you to approve...
 Signed in.

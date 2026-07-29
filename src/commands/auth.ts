@@ -12,9 +12,9 @@ import { parseUrl, validateServerUrl } from "../url.js";
 const CLIENT_ID = "aftermerge-cli";
 
 const serverOption = Options.text("server").pipe(
-  Options.withDefault("http://localhost:3000"),
+  Options.withDefault("https://www.aftermerge.dev"),
   Options.withDescription(
-    "Base URL of your AfterMerge deployment (defaults to local dev; pass --server for a real deployment)",
+    "Base URL of your AfterMerge deployment (defaults to production; pass --server http://localhost:3000 for local dev)",
   ),
 );
 

@@ -19,10 +19,10 @@ export const parseUrl = (path: string, base: string): Effect.Effect<URL, Error> 
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /** Refuse to send the session bearer token in cleartext.
- * `--server` accepts either an `https:` origin or a loopback host (the
- * default local-dev flow, `http://localhost:3000`, never leaves the
- * machine so it's exempt). Anything else over plain `http://` would put the
- * token on the wire in the clear on every subsequent command. */
+ * `--server` accepts either an `https:` origin or a loopback host (a
+ * local-dev server, e.g. `http://localhost:3000`, never leaves the machine
+ * so it's exempt). Anything else over plain `http://` would put the token
+ * on the wire in the clear on every subsequent command. */
 export const validateServerUrl = (server: string): Effect.Effect<void, Error> =>
   Effect.try({
     try: () => new URL(server),

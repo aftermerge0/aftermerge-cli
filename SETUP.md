@@ -90,7 +90,8 @@ bun run src/index.ts <command> [args]
 Once `aftermerge` resolves on your `PATH`:
 
 ```sh
-aftermerge auth login --server https://your-instance.example.com
+aftermerge auth login                                        # defaults to https://www.aftermerge.dev
+aftermerge auth login --server https://your-instance.example.com   # or point at a self-hosted instance
 ```
 
 See the README's [`auth login`](README.md#auth-login) section for what the
