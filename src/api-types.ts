@@ -38,6 +38,15 @@ export interface Finding {
   readonly description: string;
 }
 
+export interface IndexedBranch {
+  readonly repositoryId: string;
+  readonly owner: string;
+  readonly name: string;
+  readonly branchName: string;
+  readonly commitSha: string;
+  readonly ingestSource: "clone" | "upload";
+}
+
 export const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set([
   "completed",
   "failed",
@@ -91,5 +100,18 @@ export const isFinding = (value: unknown): value is Finding => {
     typeof v.severity === "string" &&
     typeof v.band === "string" &&
     typeof v.description === "string"
+  );
+};
+
+export const isIndexedBranch = (value: unknown): value is IndexedBranch => {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.repositoryId === "string" &&
+    typeof v.owner === "string" &&
+    typeof v.name === "string" &&
+    typeof v.branchName === "string" &&
+    typeof v.commitSha === "string" &&
+    (v.ingestSource === "clone" || v.ingestSource === "upload")
   );
 };
