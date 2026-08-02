@@ -2,7 +2,11 @@ import { Args, Command, Options, Prompt } from "@effect/cli";
 import type { HttpClient } from "@effect/platform";
 import { Console, Effect, Option } from "effect";
 import { apiRequest, ApiError } from "../http.js";
-import { getDefaultBranch, getOriginRemote, parseOwnerName } from "../git.js";
+import { getCurrentBranch, getDefaultBranch, getOriginRemote, parseOwnerName, resolveCommitShaOrRemote } from "../git.js";
+import { resolveConnectedRepo } from "../connected-repo.js";
+import { resolvePrRefs } from "../gh.js";
+import { readTrackedFilesAtRef } from "../upload.js";
+import { uploadRef } from "../ingest.js";
 import { onQuit } from "../prompt-utils.js";
 import { type RepoRow, isRepoRow, isRegisteredRepo, isEnsuredBranch } from "../api-types.js";
 
@@ -177,7 +181,54 @@ const remove = Command.make(
     ),
 ).pipe(Command.withDescription("Remove a repo from your org"));
 
+const refArg = Args.text({ name: "ref" }).pipe(
+  Args.optional,
+  Args.withDescription("Local branch or commit-ish to index (defaults to the current branch)"),
+);
+
+const indexPrOption = Options.integer("pr").pipe(
+  Options.optional,
+  Options.withDescription(
+    "Index a PR's head branch instead of a local ref — resolves via your local `gh` CLI, no GitHub token needed",
+  ),
+);
+
+/** Uploads and indexes one ref via the same `/api/ingest/upload` `scan` uses,
+ * but stops there — no `/api/analysis/local` call, no analysis run, no diff
+ * partner needed. For warming cross-repo context, or refreshing a branch
+ * after a push, without paying for (or waiting on) a scan you don't want. */
+const index = Command.make(
+  "index",
+  { ref: refArg, pr: indexPrOption },
+  ({ ref, pr }) =>
+    Effect.gen(function* () {
+      if (Option.isSome(ref) && Option.isSome(pr)) {
+        return yield* Effect.fail(new Error("a ref and `--pr` are mutually exclusive — `--pr` already determines the branch."));
+      }
+
+      const repo = yield* resolveConnectedRepo(
+        "This repo isn't connected yet. Run `aftermerge repos add-local` first, then try again.",
+      );
+
+      const prRefs = Option.isSome(pr) ? yield* resolvePrRefs(pr.value) : undefined;
+      const branch = prRefs ? prRefs.headBranch : Option.isSome(ref) ? ref.value : yield* getCurrentBranch();
+      if (branch === "HEAD") {
+        return yield* Effect.fail(
+          new Error(
+            "You're in a detached HEAD state (no branch checked out) — pass a ref explicitly, or check out a branch first.",
+          ),
+        );
+      }
+      const commitSha = yield* resolveCommitShaOrRemote(branch);
+
+      const files = yield* readTrackedFilesAtRef(commitSha);
+      yield* Console.log(`Indexing ${branch} (${files.length} files) at ${commitSha}...`);
+      yield* uploadRef("index", repo.id, branch, commitSha, files);
+      yield* Console.log("Indexed.");
+    }).pipe(Effect.tapError((error: Error | ApiError) => Console.error(error.message))),
+).pipe(Command.withDescription("Index a branch (or --pr's head branch) without running analysis"));
+
 export const reposCommand = Command.make("repos").pipe(
   Command.withDescription("Manage connected repos"),
-  Command.withSubcommands([list, add, addLocal, remove]),
+  Command.withSubcommands([list, add, addLocal, remove, index]),
 );
