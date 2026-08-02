@@ -120,3 +120,14 @@ export const getDefaultBranch = (): Effect.Effect<string, Error> =>
  * — kept here rather than duplicated since it's still generic git plumbing,
  * just lower-level than the rest of this file's public surface. */
 export const gitInternals = { runGit, runGitRawBytes, assertNotOptionLike };
+
+/** Resolves a ref's commit sha, falling back to `origin/<ref>` if the bare
+ * ref name isn't a valid local ref — e.g. a PR's head branch is often only
+ * fetched as a remote-tracking ref, never checked out as a local branch. */
+export const resolveCommitShaOrRemote = (ref: string): Effect.Effect<string, Error> =>
+  resolveCommitSha(ref).pipe(
+    Effect.orElse(() => resolveCommitSha(`origin/${ref}`)),
+    Effect.mapError(
+      () => new Error(`'${ref}' isn't available locally — run \`git fetch origin ${ref}\` or \`gh pr checkout <n>\` first.`),
+    ),
+  );
