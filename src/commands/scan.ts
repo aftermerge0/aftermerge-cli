@@ -5,7 +5,8 @@ import { Console, Effect, Option } from "effect";
 import { apiRequest, ApiError } from "../http.js";
 import { resolveConnectedRepo } from "../connected-repo.js";
 import { waitForRun, printFindings } from "../run.js";
-import { readTrackedFilesAtRef, type ArchivedFile } from "../upload.js";
+import { readTrackedFilesAtRef } from "../upload.js";
+import { uploadRef } from "../ingest.js";
 import { getCurrentBranch, getDefaultBranch, resolveCommitSha, resolveCommitShaOrRemote } from "../git.js";
 import { resolvePrRefs } from "../gh.js";
 import { isAnalysisRun, isIndexedBranch, type IndexedBranch } from "../api-types.js";
@@ -65,39 +66,24 @@ const pickContextRepos = (currentRepositoryId: string) =>
     );
   });
 
-/** Uploads one ref's content and waits for ingestion — `/api/ingest/upload`
- * runs the whole ingest synchronously (triggerAndWait) and is idempotent: if
- * this exact commit is already ingested, the server's own freshness check
- * returns almost immediately (see ingest-repo-from-upload.ts), so calling
- * this for a base ref that's already indexed from a prior scan costs
- * nothing beyond one quick round-trip.
- *
- * `step` labels which upload failed (base vs. head) in the error message —
- * both previously surfaced as the same bare "Request failed", making a
- * partial-upload failure (e.g. base succeeds, head fails) indistinguishable
- * from the other. The uploaded state itself is benign either way: no
- * analysis run is created until both uploads succeed, and a re-`scan` costs
- * only a quick freshness-check round-trip for whichever ref already landed. */
-const uploadRef = (
-  step: "base" | "head",
-  repositoryId: string,
-  branch: string,
-  commitSha: string,
-  files: ArchivedFile[],
-): Effect.Effect<void, ApiError | Error, HttpClient.HttpClient> =>
-  apiRequest("POST", "/api/ingest/upload", { repositoryId, branch, commitSha, files }).pipe(
-    Effect.asVoid,
-    Effect.mapError((error) =>
-      error instanceof ApiError
-        ? new ApiError({ status: error.status, message: `Uploading ${step} (${branch}): ${error.message}` })
-        : new Error(`Uploading ${step} (${branch}): ${error.message}`),
-    ),
-  );
+export interface LocalScanOptions {
+  readonly base: Option.Option<string>;
+  readonly pr: Option.Option<number>;
+  readonly context: boolean;
+}
 
-export const scanCommand = Command.make(
-  "scan",
-  { base: baseOption, pr: prOption, context: contextOption },
-  ({ base, pr, context }) =>
+/** The credential-free scan/analyze pipeline: resolve branches (locally, or
+ * via `--pr`'s local `gh` CLI lookup), upload+index both refs, start
+ * `/api/analysis/local`, wait, print findings. Shared by `scan` and
+ * `analyze` — `analyze --pr` used to hit the token-based `/api/analysis`
+ * instead, but that path required a real GitHub VCS connection this repo
+ * may not have; both commands now run the exact same no-token pipeline, one
+ * always PR-scoped (`analyze`), the other flexible (`scan`). */
+export const runLocalScan = ({
+  base,
+  pr,
+  context,
+}: LocalScanOptions): Effect.Effect<void, Error | ApiError, HttpClient.HttpClient | Prompt.Prompt.Environment> =>
   Effect.gen(function* () {
     if (Option.isSome(base) && Option.isSome(pr)) {
       return yield* Effect.fail(
@@ -196,7 +182,12 @@ export const scanCommand = Command.make(
 
     yield* waitForRun(runRaw);
     yield* printFindings(runRaw.id);
-  }).pipe(Effect.tapError((error: Error | ApiError) => Console.error(error.message))),
+  }).pipe(Effect.tapError((error: Error | ApiError) => Console.error(error.message)));
+
+export const scanCommand = Command.make(
+  "scan",
+  { base: baseOption, pr: prOption, context: contextOption },
+  ({ base, pr, context }) => runLocalScan({ base, pr, context }),
 ).pipe(
   Command.withDescription(
     "Analyze the current branch vs. a base ref (or --pr <n>), optionally with --context repos, using only local git content — no GitHub token needed",
