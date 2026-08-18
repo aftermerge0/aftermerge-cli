@@ -9,7 +9,7 @@ import { readTrackedFilesAtRef } from "../upload.js";
 import { uploadRef } from "../ingest.js";
 import { getCurrentBranch, getDefaultBranch, resolveCommitSha, resolveCommitShaOrRemote } from "../git.js";
 import { resolvePrRefs } from "../gh.js";
-import { isAnalysisRun, isIndexedBranch, type IndexedBranch } from "../api-types.js";
+import { isAnalysisRun, type IndexedBranch } from "../api-types.js";
 
 const baseOption = Options.text("base").pipe(
   Options.optional,
@@ -29,14 +29,18 @@ const contextOption = Options.boolean("context").pipe(
   ),
 );
 
+/** `--context` has no server-side endpoint any more. The route it used
+ * (`GET /api/repos/indexed-branches`) was dropped when the repo/analysis
+ * endpoints moved to the RPC mount, and unlike the rest of that group it got
+ * no `repos.*` replacement — so there is nothing to call, on any deployment.
+ * Failing loudly beats the alternative it used to do: request a 404, get the
+ * HTML error page back, and report it as an unexpected response. */
 const fetchIndexedBranches = (): Effect.Effect<IndexedBranch[], ApiError | Error, HttpClient.HttpClient> =>
-  Effect.gen(function* () {
-    const raw = yield* apiRequest("GET", "/api/repos/indexed-branches");
-    if (!Array.isArray(raw) || !raw.every(isIndexedBranch)) {
-      return yield* Effect.fail(new Error("Server returned an unexpected response listing indexed branches."));
-    }
-    return raw;
-  });
+  Effect.fail(
+    new Error(
+      "`--context` isn't supported by this server — it has no endpoint for listing indexed branches. Re-run without `--context`.",
+    ),
+  );
 
 /** Ctrl+C here means "add no context repos," not "abort the scan" — treated
  * as an empty selection rather than propagated, since a cancelled picker
