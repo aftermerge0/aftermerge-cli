@@ -2,6 +2,7 @@ import { Args, Command, Options, Prompt } from "@effect/cli";
 import type { HttpClient } from "@effect/platform";
 import { Console, Effect, Option } from "effect";
 import { apiRequest, ApiError } from "../http.js";
+import { rpcRequest } from "../rpc.js";
 import { getCurrentBranch, getDefaultBranch, getOriginRemote, parseOwnerName, resolveCommitShaOrRemote } from "../git.js";
 import { resolveConnectedRepo } from "../connected-repo.js";
 import { resolvePrRefs } from "../gh.js";
@@ -12,7 +13,7 @@ import { type RepoRow, isRepoRow, isRegisteredRepo, isEnsuredBranch } from "../a
 
 const list = Command.make("list", {}, () =>
   Effect.gen(function* () {
-    const reposRaw = yield* apiRequest("GET", "/api/repos");
+    const reposRaw = yield* rpcRequest("repos.list");
     if (!Array.isArray(reposRaw) || !reposRaw.every(isRepoRow)) {
       return yield* Effect.fail(new Error("Server returned an unexpected response listing repos."));
     }
@@ -46,7 +47,7 @@ const parseOwnerRepoArg = (ownerRepo: string): Effect.Effect<{ owner: string; na
  * user doesn't have memorized. */
 const findRepo = (owner: string, name: string): Effect.Effect<RepoRow, Error | ApiError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
-    const reposRaw = yield* apiRequest("GET", "/api/repos");
+    const reposRaw = yield* rpcRequest("repos.list");
     if (!Array.isArray(reposRaw) || !reposRaw.every(isRepoRow)) {
       return yield* Effect.fail(new Error("Server returned an unexpected response listing repos."));
     }
@@ -76,13 +77,12 @@ const autoIndexOption = Options.boolean("auto-index").pipe(
   ),
 );
 
-/** Wraps the exact same route the web dashboard's "connect repo" dialog
- * calls (POST /api/repos, app/api/repos/route.ts) — same
- * `BillingService.assertCanAddRepo` seat/plan check, same VCS-connection
- * validation, same audit log entry. Registering an *additional* branch
- * beyond GitHub's own default (POST /api/repos/[id]/branches) is a
- * separate, unbilled call — it only materializes a `branches` row, it
- * doesn't count against the repo-count limit. */
+/** Wraps the exact same handler the web dashboard's "connect repo" dialog
+ * calls (`repos.register`) — same `BillingService.assertCanAddRepo`
+ * seat/plan check, same VCS-connection validation, same audit log entry.
+ * Registering an *additional* branch beyond GitHub's own default
+ * (`branches.ensure`) is a separate, unbilled call — it only materializes a
+ * `branches` row, it doesn't count against the repo-count limit. */
 const add = Command.make(
   "add",
   { ownerRepo: ownerRepoArg, branch: branchOption, autoIndex: autoIndexOption },
@@ -90,7 +90,7 @@ const add = Command.make(
     Effect.gen(function* () {
       const { owner, name } = yield* parseOwnerRepoArg(ownerRepo);
 
-      const created = yield* apiRequest("POST", "/api/repos", { owner, name, autoIndex });
+      const created = yield* rpcRequest("repos.register", { owner, name, autoIndex });
       if (!isRegisteredRepo(created)) {
         return yield* Effect.fail(new Error("Server returned an unexpected response registering the repo."));
       }
@@ -98,7 +98,8 @@ const add = Command.make(
       yield* Console.log(`Default branch: ${created.defaultBranch}`);
 
       if (Option.isSome(branch) && branch.value !== created.defaultBranch) {
-        const ensured = yield* apiRequest("POST", `/api/repos/${created.id}/branches`, {
+        const ensured = yield* rpcRequest("branches.ensure", {
+          repositoryId: created.id,
           branchName: branch.value,
         });
         if (!isEnsuredBranch(ensured)) {
@@ -152,9 +153,9 @@ const yesOption = Options.boolean("yes").pipe(
   Options.withDescription("Skip the confirmation prompt"),
 );
 
-/** Wraps DELETE /api/repos/[id] (soft-delete via isShadowed — same pattern
- * as every other removable resource in this app; frees the org's repo-count
- * seat immediately since countRepos already filters shadowed rows out). */
+/** Wraps `repos.remove` (soft-delete via isShadowed — same pattern as every
+ * other removable resource in this app; frees the org's repo-count seat
+ * immediately since countRepos already filters shadowed rows out). */
 const remove = Command.make(
   "remove",
   { ownerRepo: ownerRepoArg, yes: yesOption },
@@ -173,7 +174,7 @@ const remove = Command.make(
         }
       }
 
-      yield* apiRequest("DELETE", `/api/repos/${repo.id}`);
+      yield* rpcRequest("repos.remove", { repositoryId: repo.id });
       yield* Console.log(`Removed ${repo.owner}/${repo.name}.`);
     }).pipe(
       (effect) => onQuit(effect, "\nCancelled."),

@@ -5,7 +5,8 @@
  * (analysis-run lifecycle, not repo lookup) so each module keeps one job. */
 import type { HttpClient } from "@effect/platform";
 import { Effect } from "effect";
-import { apiRequest, ApiError } from "./http.js";
+import { ApiError } from "./http.js";
+import { rpcRequest } from "./rpc.js";
 import { getOriginRemote, normalizeCloneUrl } from "./git.js";
 import { type RepoRow, isRepoRow } from "./api-types.js";
 
@@ -20,7 +21,7 @@ export const resolveConnectedRepo = (
     const remoteUrl = yield* getOriginRemote();
     const target = normalizeCloneUrl(remoteUrl);
 
-    const reposRaw = yield* apiRequest("GET", "/api/repos");
+    const reposRaw = yield* rpcRequest("repos.list");
     if (!Array.isArray(reposRaw) || !reposRaw.every(isRepoRow)) {
       return yield* Effect.fail(new Error("Server returned an unexpected response listing repos."));
     }

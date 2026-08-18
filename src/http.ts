@@ -39,6 +39,28 @@ const tryParseJson = (text: string): unknown => {
   }
 };
 
+/** Turns an error response body into something worth printing.
+ *
+ * This app's own routes answer errors as `{ error }` JSON, but anything in
+ * front of it — a proxy, load balancer, or WAF — can return plain text or an
+ * HTML error page instead (a 502/503/504 is the common case). An HTML body
+ * gets called out by name rather than quoted: a Next.js 404 page's first 200
+ * characters are `<!DOCTYPE html><html data-dpl-id=...`, which told the user
+ * nothing about the actual problem (the CLI asking for a route this
+ * deployment doesn't serve). */
+export const describeErrorBody = (text: string, status: number): string => {
+  const body = text.trim();
+  if (body.length === 0) return `Request failed (${status})`;
+
+  const fromJson = parseErrorMessage(tryParseJson(body));
+  if (fromJson) return fromJson;
+
+  if (/^\s*(<!doctype html|<html)/i.test(body)) {
+    return `The server returned an HTML page instead of JSON (HTTP ${status}) — this deployment doesn't serve the endpoint the CLI asked for. Check \`aftermerge auth whoami\` for which server you're signed in to.`;
+  }
+  return body.slice(0, 200);
+};
+
 /** One authenticated call to the backend's existing `app/api/**` routes —
  * the CLI is a thin client of the same handlers the web app uses, so every
  * tier/billing check they already enforce applies here too. Reads
@@ -71,18 +93,14 @@ export const apiRequest = (
     );
 
     if (response.status >= 400) {
-      // This app's own routes always answer errors as `{ error }` JSON,
-      // but anything sitting in front of it — a proxy,
-      // load balancer, or WAF — can return a plain-text/HTML error page
-      // instead (a 502/503/504 is the common case). Read the body as text
-      // first so that case gets a real (if generic) message instead of
-      // "Invalid response from server," which would otherwise make "the
-      // app is down" look like "the app returned garbage."
+      // Read the body as text first so a non-JSON error page gets a real (if
+      // generic) message instead of "Invalid response from server," which
+      // would otherwise make "the app is down" look like "the app returned
+      // garbage." See `describeErrorBody`.
       const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
-      const message =
-        (text.length > 0 ? parseErrorMessage(tryParseJson(text)) : undefined) ??
-        (text.trim().length > 0 ? text.trim().slice(0, 200) : `Request failed (${response.status})`);
-      return yield* Effect.fail(new ApiError({ status: response.status, message }));
+      return yield* Effect.fail(
+        new ApiError({ status: response.status, message: describeErrorBody(text, response.status) }),
+      );
     }
 
     return yield* response.json.pipe(

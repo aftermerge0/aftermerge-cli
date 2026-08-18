@@ -5,10 +5,11 @@
  * command-shaped behavior (polling cadence, user-facing messages). */
 import type { HttpClient } from "@effect/platform";
 import { Console, Effect } from "effect";
-import { apiRequest, ApiError } from "./http.js";
+import { ApiError } from "./http.js";
+import { rpcRequest } from "./rpc.js";
 import { type AnalysisRun, TERMINAL_STATUSES, isAnalysisRun, isFinding } from "./api-types.js";
 
-/** Polls `GET /api/analysis/:id` every 2s, printing each state transition,
+/** Polls `analysis.get` every 2s, printing each state transition,
  * until the run reaches a terminal status. Fails with a clean message if
  * the run doesn't end up `completed`. `initial` is the just-created run
  * returned by the "start analysis" call — its own status is checked first
@@ -20,7 +21,7 @@ export const waitForRun = (
     let current = initial;
     while (!TERMINAL_STATUSES.has(current.status)) {
       yield* Effect.sleep("2 seconds");
-      const polled = yield* apiRequest("GET", `/api/analysis/${initial.id}`);
+      const polled = yield* rpcRequest("analysis.get", { runId: initial.id });
       if (!isAnalysisRun(polled)) {
         return yield* Effect.fail(new Error("Server returned an unexpected response polling the run."));
       }
@@ -43,7 +44,7 @@ export const waitForRun = (
  * after `waitForRun` succeeds. */
 export const printFindings = (runId: string): Effect.Effect<void, Error | ApiError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
-    const findingsRaw = yield* apiRequest("GET", `/api/analysis/${runId}/findings`);
+    const findingsRaw = yield* rpcRequest("analysis.findings", { runId });
     if (!Array.isArray(findingsRaw) || !findingsRaw.every(isFinding)) {
       return yield* Effect.fail(new Error("Server returned an unexpected response fetching findings."));
     }

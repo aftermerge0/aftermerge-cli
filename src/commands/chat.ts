@@ -2,7 +2,8 @@ import { Command, Prompt } from "@effect/cli";
 import { HttpClient } from "@effect/platform";
 import { Console, Effect } from "effect";
 import { loadCredentials } from "../config.js";
-import { apiRequest, ApiError, CLI_USER_AGENT } from "../http.js";
+import { ApiError, CLI_USER_AGENT } from "../http.js";
+import { rpcRequest } from "../rpc.js";
 import { onQuit } from "../prompt-utils.js";
 
 interface ThreadRow {
@@ -14,7 +15,7 @@ const isThreadRow = (value: unknown): value is ThreadRow =>
 
 const createOrReuseThread = (): Effect.Effect<string, ApiError | Error, HttpClient.HttpClient> =>
   Effect.gen(function* () {
-    const thread = yield* apiRequest("POST", "/api/threads", { reuseEmpty: true });
+    const thread = yield* rpcRequest("threads.create", { reuseEmpty: true });
     if (!isThreadRow(thread)) {
       return yield* Effect.fail(new Error("Server returned an unexpected response starting a chat thread."));
     }

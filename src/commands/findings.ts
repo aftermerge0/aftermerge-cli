@@ -1,6 +1,7 @@
 import { Args, Command } from "@effect/cli";
 import { Console, Effect } from "effect";
-import { apiRequest, ApiError } from "../http.js";
+import { ApiError } from "../http.js";
+import { rpcRequest } from "../rpc.js";
 import { isFinding } from "../api-types.js";
 
 const runIdArg = Args.text({ name: "run-id" }).pipe(
@@ -9,7 +10,7 @@ const runIdArg = Args.text({ name: "run-id" }).pipe(
 
 const list = Command.make("list", { runId: runIdArg }, ({ runId }) =>
   Effect.gen(function* () {
-    const findingsRaw = yield* apiRequest("GET", `/api/analysis/${runId}/findings`);
+    const findingsRaw = yield* rpcRequest("analysis.findings", { runId });
     if (!Array.isArray(findingsRaw) || !findingsRaw.every(isFinding)) {
       return yield* Effect.fail(new Error("Server returned an unexpected response fetching findings."));
     }
