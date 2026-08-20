@@ -1,10 +1,10 @@
-import { Args, Command } from "@effect/cli";
 import { Console, Effect } from "effect";
+import { Argument, Command } from "effect/unstable/cli";
 import { apiRequest, ApiError } from "../http.js";
 import { isFinding } from "../api-types.js";
 
-const runIdArg = Args.text({ name: "run-id" }).pipe(
-  Args.withDescription("Analysis run id (printed by `aftermerge analyze`)"),
+const runIdArg = Argument.string("run-id").pipe(
+  Argument.withDescription("Analysis run id (printed by `aftermerge analyze`)"),
 );
 
 const list = Command.make("list", { runId: runIdArg }, ({ runId }) =>

@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
-import { HttpClient, HttpClientRequest } from "@effect/platform";
 import { Data, Effect } from "effect";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import { loadCredentials } from "./config.js";
 import { parseUrl } from "./url.js";
 import pkg from "../package.json" with { type: "json" };
@@ -64,7 +65,7 @@ export const apiRequest = (
       HttpClientRequest.bearerToken(credentials.token),
       HttpClientRequest.setHeader("User-Agent", CLI_USER_AGENT),
     );
-    if (body !== undefined) request = request.pipe(HttpClientRequest.bodyUnsafeJson(body));
+    if (body !== undefined) request = request.pipe(HttpClientRequest.bodyJsonUnsafe(body));
 
     const response = yield* HttpClient.execute(request).pipe(
       Effect.mapError((cause) => new ApiError({ status: 0, message: `Network error: ${cause.message}` })),

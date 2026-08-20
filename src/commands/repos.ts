@@ -1,6 +1,6 @@
-import { Args, Command, Options, Prompt } from "@effect/cli";
-import type { HttpClient } from "@effect/platform";
 import { Console, Effect, Option } from "effect";
+import { Argument, Command, Flag, Prompt } from "effect/unstable/cli";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
 import { apiRequest, ApiError } from "../http.js";
 import { getCurrentBranch, getDefaultBranch, getOriginRemote, parseOwnerName, resolveCommitShaOrRemote } from "../git.js";
 import { resolveConnectedRepo } from "../connected-repo.js";
@@ -59,19 +59,20 @@ const findRepo = (owner: string, name: string): Effect.Effect<RepoRow, Error | A
     return match;
   });
 
-const ownerRepoArg = Args.text({ name: "owner/name" }).pipe(
-  Args.withDescription("GitHub repo, e.g. acme/billing-service"),
+const ownerRepoArg = Argument.string("owner/name").pipe(
+  Argument.withDescription("GitHub repo, e.g. acme/billing-service"),
 );
 
-const branchOption = Options.text("branch").pipe(
-  Options.optional,
-  Options.withDescription(
+const branchOption = Flag.string("branch").pipe(
+  Flag.optional,
+  Flag.withDescription(
     "Also track this branch (e.g. your production branch, if it differs from GitHub's configured default branch)",
   ),
 );
 
-const autoIndexOption = Options.boolean("auto-index").pipe(
-  Options.withDescription(
+const autoIndexOption = Flag.boolean("auto-index").pipe(
+  Flag.withDefault(false),
+  Flag.withDescription(
     "Index the default branch immediately after registering (uses analysis/LLM budget — off by default, same as the web dashboard)",
   ),
 );
@@ -147,9 +148,10 @@ const addLocal = Command.make("add-local", {}, () =>
   ),
 );
 
-const yesOption = Options.boolean("yes").pipe(
-  Options.withAlias("y"),
-  Options.withDescription("Skip the confirmation prompt"),
+const yesOption = Flag.boolean("yes").pipe(
+  Flag.withAlias("y"),
+  Flag.withDefault(false),
+  Flag.withDescription("Skip the confirmation prompt"),
 );
 
 /** Wraps DELETE /api/repos/[id] (soft-delete via isShadowed — same pattern
@@ -181,14 +183,14 @@ const remove = Command.make(
     ),
 ).pipe(Command.withDescription("Remove a repo from your org"));
 
-const refArg = Args.text({ name: "ref" }).pipe(
-  Args.optional,
-  Args.withDescription("Local branch or commit-ish to index (defaults to the current branch)"),
+const refArg = Argument.string("ref").pipe(
+  Argument.optional,
+  Argument.withDescription("Local branch or commit-ish to index (defaults to the current branch)"),
 );
 
-const indexPrOption = Options.integer("pr").pipe(
-  Options.optional,
-  Options.withDescription(
+const indexPrOption = Flag.integer("pr").pipe(
+  Flag.optional,
+  Flag.withDescription(
     "Index a PR's head branch instead of a local ref — resolves via your local `gh` CLI, no GitHub token needed",
   ),
 );

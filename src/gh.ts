@@ -1,6 +1,5 @@
-import { Prompt } from "@effect/cli";
-import { Terminal } from "@effect/platform";
-import { Console, Effect } from "effect";
+import { Console, Effect, Terminal } from "effect";
+import { Prompt } from "effect/unstable/cli";
 
 /** Wraps the user's own local `gh` CLI — resolving a PR number to its
  * branch names/metadata is a local read using the user's existing `gh`
@@ -49,7 +48,7 @@ const detectGhInstallPlan = (): GhInstallPlan | null => {
  * whichever no-sudo package manager is available. Never fails the Effect —
  * declining, no detected manager, and a failed install all resolve to
  * `false` so the caller can fall back to GH_NOT_FOUND_MESSAGE uniformly. */
-const offerGhInstall = (): Effect.Effect<boolean, never, Prompt.Prompt.Environment> =>
+const offerGhInstall = (): Effect.Effect<boolean, never, Prompt.Environment> =>
   Effect.gen(function* () {
     const plan = detectGhInstallPlan();
     if (!plan) {
@@ -65,7 +64,7 @@ const offerGhInstall = (): Effect.Effect<boolean, never, Prompt.Prompt.Environme
         message: `\`gh\` CLI not found. Install it now via ${plan.label} (\`${commandLine}\`)?`,
         initial: false,
       }),
-    ).pipe(Effect.catchAll((error) => (Terminal.isQuitException(error) ? Effect.succeed(false) : Effect.fail(error))));
+    ).pipe(Effect.catch((error) => (Terminal.isQuitError(error) ? Effect.succeed(false) : Effect.fail(error))));
     if (!confirmed) {
       yield* Console.log(GH_NOT_FOUND_MESSAGE);
       return false;
@@ -78,7 +77,7 @@ const offerGhInstall = (): Effect.Effect<boolean, never, Prompt.Prompt.Environme
         return (await proc.exited) === 0;
       },
       catch: () => "install-failed" as const,
-    }).pipe(Effect.catchAll(() => Effect.succeed(false)));
+    }).pipe(Effect.catch(() => Effect.succeed(false)));
 
     if (!installed || !Bun.which("gh")) {
       yield* Console.error(
@@ -165,9 +164,9 @@ const runGhPrView = (prNumber: number): Effect.Effect<PrRefs, Error> =>
  * on the user's behalf and retries once — falls back to the plain
  * not-found error if the user declines, no install plan applies, or the
  * install fails. */
-export const resolvePrRefs = (prNumber: number): Effect.Effect<PrRefs, Error, Prompt.Prompt.Environment> =>
+export const resolvePrRefs = (prNumber: number): Effect.Effect<PrRefs, Error, Prompt.Environment> =>
   runGhPrView(prNumber).pipe(
-    Effect.catchAll((error) =>
+    Effect.catch((error) =>
       error instanceof GhNotFoundError
         ? offerGhInstall().pipe(
             Effect.flatMap((installed) => (installed ? runGhPrView(prNumber) : Effect.fail(error))),

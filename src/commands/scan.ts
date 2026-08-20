@@ -1,7 +1,6 @@
-import { Command, Options, Prompt } from "@effect/cli";
-import { Terminal } from "@effect/platform";
-import type { HttpClient } from "@effect/platform";
-import { Console, Effect, Option } from "effect";
+import { Console, Effect, Option, Terminal } from "effect";
+import { Command, Flag, Prompt } from "effect/unstable/cli";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
 import { apiRequest, ApiError } from "../http.js";
 import { resolveConnectedRepo } from "../connected-repo.js";
 import { waitForRun, printFindings } from "../run.js";
@@ -17,20 +16,21 @@ import {
   type WireId,
 } from "../api-types.js";
 
-const baseOption = Options.text("base").pipe(
-  Options.optional,
-  Options.withDescription("Base ref to diff against (defaults to the repo's default branch)"),
+const baseOption = Flag.string("base").pipe(
+  Flag.optional,
+  Flag.withDescription("Base ref to diff against (defaults to the repo's default branch)"),
 );
 
-const prOption = Options.integer("pr").pipe(
-  Options.optional,
-  Options.withDescription(
+const prOption = Flag.integer("pr").pipe(
+  Flag.optional,
+  Flag.withDescription(
     "Analyze a specific PR by number instead of the current branch — resolves branches via your local `gh` CLI, no GitHub token needed",
   ),
 );
 
-const contextOption = Options.boolean("context").pipe(
-  Options.withDescription(
+const contextOption = Flag.boolean("context").pipe(
+  Flag.withDefault(false),
+  Flag.withDescription(
     "Pick other already-indexed repos/branches to include as cross-repo context (only already-indexed ones are offered — run `scan` inside another repo first, or index it from the dashboard, to make it available)",
   ),
 );
@@ -71,8 +71,8 @@ const pickContextRepos = (currentRepositoryId: WireId) =>
         })),
       }),
     ).pipe(
-      Effect.catchAll((error) =>
-        Terminal.isQuitException(error) ? Effect.succeed([] as IndexedBranch[]) : Effect.fail(error),
+      Effect.catch((error) =>
+        Terminal.isQuitError(error) ? Effect.succeed([] as IndexedBranch[]) : Effect.fail(error),
       ),
     );
   });
@@ -94,7 +94,11 @@ export const runLocalScan = ({
   base,
   pr,
   context,
-}: LocalScanOptions): Effect.Effect<void, Error | ApiError, HttpClient.HttpClient | Prompt.Prompt.Environment> =>
+}: LocalScanOptions): Effect.Effect<
+  { readonly runId: string },
+  Error | ApiError,
+  HttpClient.HttpClient | Prompt.Environment
+> =>
   Effect.gen(function* () {
     if (Option.isSome(base) && Option.isSome(pr)) {
       return yield* Effect.fail(
@@ -193,6 +197,7 @@ export const runLocalScan = ({
 
     yield* waitForRun(runRaw);
     yield* printFindings(runRaw.id);
+    return { runId: idToString(runRaw.id) };
   }).pipe(Effect.tapError((error: Error | ApiError) => Console.error(error.message)));
 
 export const scanCommand = Command.make(

@@ -1,5 +1,5 @@
-import type { HttpClient } from "@effect/platform";
 import { Effect } from "effect";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
 import { apiRequest, ApiError } from "./http.js";
 import type { WireId } from "./api-types.js";
 import type { ArchivedFile } from "./upload.js";
