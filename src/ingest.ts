@@ -1,6 +1,7 @@
 import type { HttpClient } from "@effect/platform";
 import { Effect } from "effect";
 import { apiRequest, ApiError } from "./http.js";
+import type { WireId } from "./api-types.js";
 import type { ArchivedFile } from "./upload.js";
 
 /** Uploads one ref's content and waits for ingestion — `/api/ingest/upload`
@@ -19,7 +20,7 @@ import type { ArchivedFile } from "./upload.js";
  * whichever ref already landed. */
 export const uploadRef = (
   label: string,
-  repositoryId: string,
+  repositoryId: WireId,
   branch: string,
   commitSha: string,
   files: ArchivedFile[],

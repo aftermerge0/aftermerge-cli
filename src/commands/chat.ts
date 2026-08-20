@@ -4,13 +4,16 @@ import { Console, Effect } from "effect";
 import { loadCredentials } from "../config.js";
 import { apiRequest, ApiError, CLI_USER_AGENT } from "../http.js";
 import { onQuit } from "../prompt-utils.js";
+import { idToString, isWireId, type WireId } from "../api-types.js";
 
 interface ThreadRow {
-  readonly id: string;
+  readonly id: WireId;
 }
 
 const isThreadRow = (value: unknown): value is ThreadRow =>
-  !!value && typeof value === "object" && typeof (value as Record<string, unknown>).id === "string";
+  !!value &&
+  typeof value === "object" &&
+  isWireId((value as Record<string, unknown>).id);
 
 const createOrReuseThread = (): Effect.Effect<string, ApiError | Error, HttpClient.HttpClient> =>
   Effect.gen(function* () {
@@ -18,7 +21,7 @@ const createOrReuseThread = (): Effect.Effect<string, ApiError | Error, HttpClie
     if (!isThreadRow(thread)) {
       return yield* Effect.fail(new Error("Server returned an unexpected response starting a chat thread."));
     }
-    return thread.id;
+    return idToString(thread.id);
   });
 
 /** Issues one chat turn. Split out from `sendMessage` (previously one

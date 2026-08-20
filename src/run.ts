@@ -6,7 +6,13 @@
 import type { HttpClient } from "@effect/platform";
 import { Console, Effect } from "effect";
 import { apiRequest, ApiError } from "./http.js";
-import { type AnalysisRun, TERMINAL_STATUSES, isAnalysisRun, isFinding } from "./api-types.js";
+import {
+  type AnalysisRun,
+  TERMINAL_STATUSES,
+  isAnalysisRun,
+  isFinding,
+  type WireId,
+} from "./api-types.js";
 
 /** Polls `GET /api/analysis/:id` every 2s, printing each state transition,
  * until the run reaches a terminal status. Fails with a clean message if
@@ -41,7 +47,7 @@ export const waitForRun = (
 
 /** Fetches and pretty-prints every finding for a completed run. Call only
  * after `waitForRun` succeeds. */
-export const printFindings = (runId: string): Effect.Effect<void, Error | ApiError, HttpClient.HttpClient> =>
+export const printFindings = (runId: WireId): Effect.Effect<void, Error | ApiError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const findingsRaw = yield* apiRequest("GET", `/api/analysis/${runId}/findings`);
     if (!Array.isArray(findingsRaw) || !findingsRaw.every(isFinding)) {

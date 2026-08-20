@@ -9,7 +9,13 @@ import { readTrackedFilesAtRef } from "../upload.js";
 import { uploadRef } from "../ingest.js";
 import { getCurrentBranch, getDefaultBranch, resolveCommitSha, resolveCommitShaOrRemote } from "../git.js";
 import { resolvePrRefs } from "../gh.js";
-import { isAnalysisRun, isIndexedBranch, type IndexedBranch } from "../api-types.js";
+import {
+  idToString,
+  isAnalysisRun,
+  isIndexedBranch,
+  type IndexedBranch,
+  type WireId,
+} from "../api-types.js";
 
 const baseOption = Options.text("base").pipe(
   Options.optional,
@@ -41,10 +47,15 @@ const fetchIndexedBranches = (): Effect.Effect<IndexedBranch[], ApiError | Error
 /** Ctrl+C here means "add no context repos," not "abort the scan" — treated
  * as an empty selection rather than propagated, since a cancelled picker
  * shouldn't cancel the whole command. */
-const pickContextRepos = (currentRepositoryId: string) =>
+const pickContextRepos = (currentRepositoryId: WireId) =>
   Effect.gen(function* () {
     const indexed = yield* fetchIndexedBranches();
-    const candidates = indexed.filter((b) => b.repositoryId !== currentRepositoryId);
+    // Normalised on both sides: these two ids arrive from different routes
+    // and a number-vs-string mismatch here would not throw, it would just
+    // quietly offer the current repo as its own cross-repo context.
+    const candidates = indexed.filter(
+      (b) => idToString(b.repositoryId) !== idToString(currentRepositoryId),
+    );
     if (candidates.length === 0) {
       yield* Console.log(
         "No other indexed repos/branches available as context yet — run `aftermerge scan` inside another repo's checkout first (or index it from the dashboard).",

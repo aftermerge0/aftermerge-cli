@@ -8,8 +8,31 @@
  * `analyze.ts`'s did, even though `GET /api/repos` returns the same row
  * shape to both). */
 
+/**
+ * Ids on the wire are `bigint` identity columns in the web app's schema
+ * (D25), so JSON carries them as NUMBERS — `{"id": 4}`, never `{"id": "4"}`.
+ * The frozen app used string ids and every guard below was written against
+ * that, which is why each one rejected each real row and every command died
+ * with its generic "unexpected response" message.
+ *
+ * Accept both rather than pinning to number: the REST routes are a shim with
+ * a sunset (D27) and the RPC surface that replaces them may well emit
+ * strings, so a guard that demands one type would break again on the way out.
+ *
+ * `idToString` is for the two places an id is COMPARED or handed to a
+ * string-typed parameter. Interpolating into a URL needs nothing — a template
+ * string coerces on its own.
+ */
+export type WireId = string | number;
+
+export const isWireId = (value: unknown): value is WireId =>
+  (typeof value === "string" && value.length > 0) ||
+  (typeof value === "number" && Number.isInteger(value));
+
+export const idToString = (id: WireId): string => String(id);
+
 export interface RepoRow {
-  readonly id: string;
+  readonly id: WireId;
   readonly owner: string;
   readonly name: string;
   readonly cloneUrl: string;
@@ -20,14 +43,14 @@ export interface RegisteredRepo extends RepoRow {
 }
 
 export interface EnsuredBranch {
-  readonly id: string;
+  readonly id: WireId;
   readonly name: string;
 }
 
 export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export interface AnalysisRun {
-  readonly id: string;
+  readonly id: WireId;
   readonly status: RunStatus;
 }
 
@@ -39,7 +62,7 @@ export interface Finding {
 }
 
 export interface IndexedBranch {
-  readonly repositoryId: string;
+  readonly repositoryId: WireId;
   readonly owner: string;
   readonly name: string;
   readonly branchName: string;
@@ -70,7 +93,7 @@ export const isRepoRow = (value: unknown): value is RepoRow => {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   return (
-    typeof v.id === "string" &&
+    isWireId(v.id) &&
     typeof v.owner === "string" &&
     typeof v.name === "string" &&
     typeof v.cloneUrl === "string"
@@ -83,13 +106,13 @@ export const isRegisteredRepo = (value: unknown): value is RegisteredRepo =>
 export const isEnsuredBranch = (value: unknown): value is EnsuredBranch => {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
-  return typeof v.id === "string" && typeof v.name === "string";
+  return isWireId(v.id) && typeof v.name === "string";
 };
 
 export const isAnalysisRun = (value: unknown): value is AnalysisRun => {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
-  return typeof v.id === "string" && typeof v.status === "string" && KNOWN_STATUSES.has(v.status);
+  return isWireId(v.id) && typeof v.status === "string" && KNOWN_STATUSES.has(v.status);
 };
 
 export const isFinding = (value: unknown): value is Finding => {
@@ -107,7 +130,7 @@ export const isIndexedBranch = (value: unknown): value is IndexedBranch => {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   return (
-    typeof v.repositoryId === "string" &&
+    isWireId(v.repositoryId) &&
     typeof v.owner === "string" &&
     typeof v.name === "string" &&
     typeof v.branchName === "string" &&
