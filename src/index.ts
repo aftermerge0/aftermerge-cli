@@ -14,7 +14,7 @@ import { wantsTui } from "./wants-tui.js";
 import pkg from "../package.json" with { type: "json" };
 
 export const rootCommand = Command.make("aftermerge").pipe(
-  Command.withDescription("AfterMerge CLI — sign in and run checks from your terminal"),
+  Command.withDescription("AfterMerge — terminal app. Type `aftermerge` or `am`."),
   Command.withSubcommands([authCommand, analyzeCommand, reposCommand, findingsCommand, chatCommand, scanCommand]),
 );
 

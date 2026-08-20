@@ -5,14 +5,15 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "aftermerge": "./src/index.ts"
+    "aftermerge": "./src/index.ts",
+    "am": "./src/index.ts"
   },
   "scripts": {
     "dev": "bun run src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "compile": "bun build --compile --outfile dist/aftermerge ./src/index.ts"
+    "compile": "bun build --compile --outfile dist/aftermerge ./src/index.ts && cp dist/aftermerge dist/am"
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-rc.111",

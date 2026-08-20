@@ -66,4 +66,15 @@ describe("wantsTui", () => {
       expect(typeof result).toBe("boolean");
     }
   });
+
+  test("am as the binary name still defaults to TUI", () => {
+    delete process.env.CI;
+    process.env.TERM = "xterm-256color";
+    const result = wantsTui(["bun", "am"]);
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      expect(result).toBe(true);
+    } else {
+      expect(typeof result).toBe("boolean");
+    }
+  });
 });

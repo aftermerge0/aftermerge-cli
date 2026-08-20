@@ -22,9 +22,14 @@ import {
  * so a run that's somehow already terminal doesn't do a pointless sleep. */
 export const waitForRun = (
   initial: AnalysisRun,
+  onStatus?: (status: string) => void,
 ): Effect.Effect<AnalysisRun, Error | ApiError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
+    const report = (status: string) =>
+      onStatus ? Effect.sync(() => onStatus(status)) : Effect.void;
+
     let current = initial;
+    yield* report(current.status);
     while (!TERMINAL_STATUSES.has(current.status)) {
       yield* Effect.sleep(Duration.seconds(2));
       const polled = yield* apiRequest("GET", `/api/analysis/${initial.id}`);
@@ -33,6 +38,7 @@ export const waitForRun = (
       }
       current = polled;
       yield* Console.log(`  ${current.status}...`);
+      yield* report(current.status);
     }
 
     if (current.status !== "completed") {

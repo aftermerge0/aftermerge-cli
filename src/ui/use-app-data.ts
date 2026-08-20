@@ -17,6 +17,14 @@ import {
   type SessionUser,
 } from "@/queries";
 import { AppRuntime, sinkConsole } from "@/runtime";
+import {
+  applyScanEvent,
+  completeScanSteps,
+  failActiveStep,
+  initialScanSteps,
+  percentForSteps,
+  type ScanStep,
+} from "@/scan-progress";
 import type { ParsedRoute } from "@/ui/route";
 import type { AuthDevice, AuthStatus, AuthUser } from "@/ui/views/auth";
 import type { ChatMessage } from "@/ui/views/chat";
@@ -46,38 +54,6 @@ const toFindingRows = (
     description: finding.description,
   }));
 
-const progressFromLog = (line: string): ScanProgress | undefined => {
-  const text = line.trim().toLowerCase();
-  if (text.length === 0) {
-    return undefined;
-  }
-  if (text.includes("reading") && text.includes("base")) {
-    return { value: 12, total: 100, label: "reading base" };
-  }
-  if (text.includes("indexing") && text.includes("base")) {
-    return { value: 28, total: 100, label: "indexing base" };
-  }
-  if (text.includes("reading") && text.includes("head")) {
-    return { value: 42, total: 100, label: "reading head" };
-  }
-  if (text.includes("indexing") && text.includes("head")) {
-    return { value: 58, total: 100, label: "indexing head" };
-  }
-  if (text.includes("starting analysis") || text.includes("run id")) {
-    return { value: 70, total: 100, label: "starting run" };
-  }
-  if (text.includes("pending")) {
-    return { value: 78, total: 100, label: "pending" };
-  }
-  if (text.includes("running")) {
-    return { value: 88, total: 100, label: "running" };
-  }
-  if (text.includes("completed") || text.includes("finding")) {
-    return { value: 100, total: 100, label: "complete" };
-  }
-  return { value: 35, total: 100, label: line.trim().slice(0, 48) };
-};
-
 const interruptFiber = (fiber: Fiber.Fiber<unknown, unknown> | null): void => {
   if (fiber) {
     AppRuntime.runFork(Fiber.interrupt(fiber));
@@ -86,9 +62,11 @@ const interruptFiber = (fiber: Fiber.Fiber<unknown, unknown> | null): void => {
 
 export const useAppData = (initialRoute: ParsedRoute) => {
   const [user, setUser] = useState<AuthUser | undefined>(undefined);
+  const [sessionLoading, setSessionLoading] = useState(true);
   const [authStatus, setAuthStatus] = useState<AuthStatus>("signed-out");
   const [device, setDevice] = useState<AuthDevice | undefined>(undefined);
   const [authError, setAuthError] = useState<string | undefined>(undefined);
+  const [loginStartedAt, setLoginStartedAt] = useState<number | undefined>(undefined);
 
   const [repos, setRepos] = useState<RepoRow[]>([]);
   const [reposLoading, setReposLoading] = useState(false);
@@ -96,6 +74,8 @@ export const useAppData = (initialRoute: ParsedRoute) => {
 
   const [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
   const [scanProgress, setScanProgress] = useState<ScanProgress | undefined>(undefined);
+  const [scanSteps, setScanSteps] = useState<ScanStep[]>([]);
+  const [scanStartedAt, setScanStartedAt] = useState<number | undefined>(undefined);
   const [scanFindings, setScanFindings] = useState<FindingRow[]>([]);
   const [scanError, setScanError] = useState<string | undefined>(undefined);
   const [runId, setRunId] = useState<string | undefined>(undefined);
@@ -114,8 +94,11 @@ export const useAppData = (initialRoute: ParsedRoute) => {
   const loginFiber = useRef<Fiber.Fiber<unknown, unknown> | null>(null);
   const chatFiber = useRef<Fiber.Fiber<unknown, unknown> | null>(null);
   const sessionFiber = useRef<Fiber.Fiber<unknown, unknown> | null>(null);
+  const prScanStarted = useRef(false);
 
   const applySession = useCallback((session: SessionUser | null) => {
+    setSessionLoading(false);
+    setLoginStartedAt(undefined);
     if (!session) {
       setUser(undefined);
       setAuthStatus("signed-out");
@@ -128,6 +111,7 @@ export const useAppData = (initialRoute: ParsedRoute) => {
   }, []);
 
   const refreshSession = useCallback(() => {
+    setSessionLoading(true);
     interruptFiber(sessionFiber.current);
     sessionFiber.current = AppRuntime.runFork(
       loadSession().pipe(
@@ -136,6 +120,7 @@ export const useAppData = (initialRoute: ParsedRoute) => {
             applySession(null);
             setAuthError(failMessage(error));
             setAuthStatus("error");
+            setSessionLoading(false);
           },
           onSuccess: (session) => {
             applySession(session);
@@ -194,19 +179,31 @@ export const useAppData = (initialRoute: ParsedRoute) => {
     setScanStatus("running");
     setScanError(undefined);
     setScanFindings([]);
-    setScanProgress({ value: 6, total: 100, label: "starting" });
+    const nextSteps = applyScanEvent(initialScanSteps(), {
+      kind: "step",
+      step: "resolve",
+    });
+    setScanSteps(nextSteps);
+    setScanStartedAt(Date.now());
+    setScanProgress({
+      value: percentForSteps(nextSteps),
+      total: 100,
+      label: "resolve refs",
+    });
 
-    const effect = scanCurrentRepo(initialRoute.pr).pipe(
-      Effect.provideService(
-        Console.Console,
-        sinkConsole((line) => {
-          const next = progressFromLog(line);
-          if (next) {
-            setScanProgress(next);
-          }
-        }),
-      ),
-    );
+    const effect = scanCurrentRepo(initialRoute.pr, (event) => {
+      setScanSteps((prev) => {
+        const updated = applyScanEvent(prev.length === 0 ? initialScanSteps() : prev, event);
+        const analyzeStatus = event.kind === "analyze" ? event.status : undefined;
+        const active = updated.find((step) => step.state === "active");
+        setScanProgress({
+          value: percentForSteps(updated, analyzeStatus),
+          total: 100,
+          label: active?.detail ?? active?.title ?? "scanning",
+        });
+        return updated;
+      });
+    }).pipe(Effect.provideService(Console.Console, sinkConsole(() => {})));
 
     scanFiber.current = AppRuntime.runFork(
       effect.pipe(
@@ -214,11 +211,12 @@ export const useAppData = (initialRoute: ParsedRoute) => {
           onFailure: (error) => {
             setScanStatus("failed");
             setScanError(failMessage(error));
-            setScanProgress(undefined);
+            setScanSteps((prev) => failActiveStep(prev));
           },
           onSuccess: ({ runId: id }) => {
             setRunId(id);
             setScanStatus("completed");
+            setScanSteps((prev) => completeScanSteps(prev));
             setScanProgress({ value: 100, total: 100, label: "complete" });
             loadRunFindings(id);
           },
@@ -232,6 +230,7 @@ export const useAppData = (initialRoute: ParsedRoute) => {
     setAuthStatus("waiting");
     setAuthError(undefined);
     setDevice(undefined);
+    setLoginStartedAt(Date.now());
 
     loginFiber.current = AppRuntime.runFork(
       Effect.gen(function* () {
@@ -251,6 +250,7 @@ export const useAppData = (initialRoute: ParsedRoute) => {
             setAuthStatus("error");
             setAuthError(failMessage(error));
             setDevice(undefined);
+            setLoginStartedAt(undefined);
           },
           onSuccess: () => {
             refreshRepos();
@@ -383,25 +383,31 @@ export const useAppData = (initialRoute: ParsedRoute) => {
   }, [refreshRepos, user]);
 
   useEffect(() => {
-    if (initialRoute.pr !== undefined) {
-      startScan();
+    if (!user || initialRoute.pr === undefined || prScanStarted.current) {
+      return;
     }
-    // Deep-link scan fires once on boot.
+    prScanStarted.current = true;
+    startScan();
+    // Deep-link scan waits for a session, then fires once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user]);
 
   const selectedRow = scanFindings[selectedFinding];
 
   return {
     user,
+    sessionLoading,
     authStatus,
     device,
     authError,
+    loginStartedAt,
     repos,
     reposLoading,
     reposError,
     scanStatus,
     scanProgress,
+    scanSteps,
+    scanStartedAt,
     scanFindings,
     scanError,
     runId,

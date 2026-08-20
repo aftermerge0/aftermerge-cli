@@ -16,6 +16,7 @@ import { runLocalScan } from "./commands/scan.js";
 import { clearCredentials, loadCredentials } from "./config.js";
 import { apiRequest, ApiError } from "./http.js";
 import { fetchFindings } from "./run.js";
+import type { ScanProgressEvent } from "./scan-progress.js";
 
 export type { ChatStreamEvent, DeviceCodeResponse, Finding, RepoRow };
 export { DEFAULT_AUTH_SERVER };
@@ -67,12 +68,14 @@ export const listFindings = fetchFindings;
 /** TUI never offers `--context` (that path is Prompt). Runtime still lists
  * `Prompt.Environment` on `runLocalScan`; we never take that branch here. */
 export const scanCurrentRepo = (
-  pr?: number,
+  pr: number | undefined,
+  onProgress?: (event: ScanProgressEvent) => void,
 ): Effect.Effect<{ readonly runId: string }, Error | ApiError, HttpClient.HttpClient> =>
   runLocalScan({
     base: Option.none(),
     pr: pr === undefined ? Option.none() : Option.some(pr),
     context: false,
+    onProgress,
   }) as Effect.Effect<{ readonly runId: string }, Error | ApiError, HttpClient.HttpClient>;
 
 export const beginLogin = (

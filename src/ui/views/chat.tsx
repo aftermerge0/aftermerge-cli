@@ -51,9 +51,13 @@ export const ChatView = ({
                   {message.role === "user" ? "you" : "aftermerge"}
                 </text>
                 {message.role === "assistant" ? (
-                  <Markdown>{message.content}</Markdown>
+                  <Markdown width={Math.max(24, width - 6)}>
+                    {message.content}
+                  </Markdown>
                 ) : (
-                  <text fg={theme.colors.foreground}>{message.content}</text>
+                  <text fg={theme.colors.foreground} wrapMode="word">
+                    {message.content}
+                  </text>
                 )}
                 {message.streaming ? (
                   <Spinner type="line" color={theme.colors.mutedForeground} />

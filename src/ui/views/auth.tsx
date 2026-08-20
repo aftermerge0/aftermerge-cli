@@ -1,7 +1,9 @@
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
+import { useAnimation } from "@/hooks/use-animation";
 import { useTheme } from "@/hooks/use-theme";
 import { AFTERMERGE_COLORS } from "@/lib/terminal-themes/aftermerge";
+import { formatElapsed } from "@/scan-progress";
 import { EmptyState, ErrorLine, ViewHeader, Well } from "@/ui/chrome";
 
 export type AuthStatus = "signed-out" | "waiting" | "signed-in" | "error";
@@ -21,6 +23,8 @@ export interface AuthViewProps {
   user?: AuthUser;
   device?: AuthDevice;
   error?: string;
+  waitingSince?: number;
+  checking?: boolean;
 }
 
 export const SAMPLE_DEVICE: AuthDevice = {
@@ -36,17 +40,36 @@ export const AuthView = ({
   user,
   device,
   error,
+  waitingSince,
+  checking = false,
 }: AuthViewProps) => {
   const theme = useTheme();
   const resolved: AuthStatus = status ?? (user ? "signed-in" : "signed-out");
+  useAnimation({
+    intervalMs: 1000,
+    isActive: resolved === "waiting" && waitingSince !== undefined,
+  });
+  const waited =
+    resolved === "waiting" && waitingSince !== undefined
+      ? formatElapsed(Date.now() - waitingSince)
+      : undefined;
 
   return (
     <box flexDirection="column" flexGrow={1}>
       <ViewHeader kicker="auth" title="This machine" />
-      {resolved === "signed-out" ? (
-        <EmptyState>sign in</EmptyState>
+      {checking ? (
+        <box marginTop={1}>
+          <Spinner
+            type="line"
+            label="checking session"
+            color={theme.colors.mutedForeground}
+          />
+        </box>
       ) : null}
-      {resolved === "signed-in" && user ? (
+      {!checking && resolved === "signed-out" ? (
+        <EmptyState>sign in to continue</EmptyState>
+      ) : null}
+      {!checking && resolved === "signed-in" && user ? (
         <box flexDirection="column" gap={1} marginTop={1}>
           <Badge variant="success" bordered={false} bold>
             signed in
@@ -54,7 +77,7 @@ export const AuthView = ({
           <text fg={theme.colors.foreground}>{formatUser(user)}</text>
         </box>
       ) : null}
-      {resolved === "waiting" && device ? (
+      {!checking && resolved === "waiting" && device ? (
         <box flexDirection="column" marginTop={1} gap={1}>
           <Well bordered>
             <text fg={AFTERMERGE_COLORS.accent}>
@@ -66,12 +89,12 @@ export const AuthView = ({
           </Well>
           <Spinner
             type="line"
-            label="waiting for browser"
+            label={waited ? `waiting for browser · ${waited}` : "waiting for browser"}
             color={theme.colors.mutedForeground}
           />
         </box>
       ) : null}
-      {resolved === "waiting" && !device ? (
+      {!checking && resolved === "waiting" && !device ? (
         <box marginTop={1}>
           <Spinner
             type="line"

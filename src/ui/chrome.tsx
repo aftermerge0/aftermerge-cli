@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { useAnimation } from "@/hooks/use-animation";
 import { useTheme } from "@/hooks/use-theme";
 
 export const ViewHeader = ({
@@ -40,11 +41,14 @@ export const ErrorLine = ({ children }: { children: string }) => {
 export const StatusLine = ({
   tone = "muted",
   label,
+  live = false,
 }: {
   tone?: "muted" | "info" | "ok" | "warn" | "danger";
   label: string;
+  live?: boolean;
 }) => {
   const theme = useTheme();
+  const frame = useAnimation({ intervalMs: 480, isActive: live });
   const color =
     tone === "info"
       ? theme.colors.info
@@ -55,10 +59,11 @@ export const StatusLine = ({
           : tone === "danger"
             ? theme.colors.error
             : theme.colors.mutedForeground;
+  const pulseOn = !live || frame % 2 === 0;
 
   return (
     <box flexDirection="row" gap={1} flexShrink={0}>
-      <text fg={color}>●</text>
+      <text fg={pulseOn ? color : theme.colors.mutedForeground}>●</text>
       <text fg={theme.colors.foreground}>{label}</text>
     </box>
   );

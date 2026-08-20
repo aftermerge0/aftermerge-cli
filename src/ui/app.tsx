@@ -1,8 +1,9 @@
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AppShell } from "@/components/ui/app-shell";
 import { CommandPalette, type Command } from "@/components/ui/command-palette";
+import { Spinner } from "@/components/ui/spinner";
 import { ThemeProvider } from "@/components/ui/theme-provider";
 import { useTheme } from "@/hooks/use-theme";
 import { aftermergeTheme } from "@/lib/terminal-themes/aftermerge";
@@ -36,7 +37,14 @@ const formatUser = (
   return user.org ? `${user.login}@${user.org}` : user.login;
 };
 
-const footerFor = (view: ViewId, capturingText: boolean): string => {
+const footerFor = (
+  view: ViewId,
+  capturingText: boolean,
+  signedIn: boolean,
+): string => {
+  if (!signedIn) {
+    return "l sign in · q quit";
+  }
   if (capturingText) {
     return "enter send · esc palette · ctrl+c quit";
   }
@@ -56,9 +64,39 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
   const theme = useTheme();
   const renderer = useRenderer();
   const { width } = useTerminalDimensions();
-  const [view, setView] = useState<ViewId>(initialRoute.view);
+  const [view, setView] = useState<ViewId>("auth");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const data = useAppData(initialRoute);
+  const signedIn = Boolean(data.user);
+  const gated = useRef(false);
+  const loginKicked = useRef(false);
+
+  useEffect(() => {
+    if (data.sessionLoading) {
+      return;
+    }
+    if (!data.user) {
+      gated.current = false;
+      setView("auth");
+      return;
+    }
+    if (!gated.current) {
+      gated.current = true;
+      setView(initialRoute.view);
+    }
+  }, [data.sessionLoading, data.user, initialRoute.view]);
+
+  useEffect(() => {
+    if (data.sessionLoading || data.user) {
+      loginKicked.current = Boolean(data.user);
+      return;
+    }
+    if (loginKicked.current) {
+      return;
+    }
+    loginKicked.current = true;
+    data.startLogin();
+  }, [data.sessionLoading, data.user, data.startLogin]);
 
   const quit = useCallback(() => {
     data.interruptAll();
@@ -101,6 +139,11 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
     }
 
     if (!capturingText && key.name === "s") {
+      if (!signedIn) {
+        setView("auth");
+        data.startLogin();
+        return;
+      }
       setView("scan");
       data.startScan();
       return;
@@ -138,7 +181,7 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
       digit <= TABS.length
     ) {
       const next = TABS[digit - 1];
-      if (next) {
+      if (next && (signedIn || next.id === "auth")) {
         setView(next.id);
       }
       return;
@@ -146,6 +189,9 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
 
     const idx = VIEW_IDS.indexOf(view);
     if (capturingText) {
+      return;
+    }
+    if (!signedIn) {
       return;
     }
     if (key.name === "left" && idx > 0) {
@@ -161,49 +207,69 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
     }
   });
 
-  const commands: Command[] = [
-    ...TABS.map((tab, i) => ({
-      id: tab.id,
-      label: tab.label,
-      shortcut: String(i + 1),
-      group: "views",
-      onSelect: () => setView(tab.id),
-    })),
-    {
-      id: "scan-now",
-      label: "Scan this repo",
-      shortcut: "s",
-      group: "actions",
-      onSelect: () => {
-        setView("scan");
-        data.startScan();
-      },
-    },
-    {
-      id: "sign-in",
-      label: "Sign in",
-      shortcut: "l",
-      group: "actions",
-      onSelect: () => {
-        setView("auth");
-        data.startLogin();
-      },
-    },
-    {
-      id: "sign-out",
-      label: "Sign out",
-      shortcut: "o",
-      group: "actions",
-      onSelect: data.logout,
-    },
-    {
-      id: "quit",
-      label: "Quit",
-      shortcut: "q",
-      group: "app",
-      onSelect: quit,
-    },
-  ];
+  const commands: Command[] = signedIn
+    ? [
+        ...TABS.map((tab, i) => ({
+          id: tab.id,
+          label: tab.label,
+          shortcut: String(i + 1),
+          group: "views",
+          onSelect: () => setView(tab.id),
+        })),
+        {
+          id: "scan-now",
+          label: "Scan this repo",
+          shortcut: "s",
+          group: "actions",
+          onSelect: () => {
+            setView("scan");
+            data.startScan();
+          },
+        },
+        {
+          id: "sign-in",
+          label: "Sign in",
+          shortcut: "l",
+          group: "actions",
+          onSelect: () => {
+            setView("auth");
+            data.startLogin();
+          },
+        },
+        {
+          id: "sign-out",
+          label: "Sign out",
+          shortcut: "o",
+          group: "actions",
+          onSelect: data.logout,
+        },
+        {
+          id: "quit",
+          label: "Quit",
+          shortcut: "q",
+          group: "app",
+          onSelect: quit,
+        },
+      ]
+    : [
+        {
+          id: "sign-in",
+          label: "Sign in",
+          shortcut: "l",
+          group: "actions",
+          onSelect: () => {
+            setView("auth");
+            data.startLogin();
+          },
+        },
+        {
+          id: "quit",
+          label: "Quit",
+          shortcut: "q",
+          group: "app",
+          onSelect: quit,
+        },
+      ];
 
   const paletteWidth = Math.min(52, Math.max(36, width - 8));
 
@@ -230,7 +296,15 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
             <b>AFTERMERGE</b>
           </text>
           <box flexGrow={1} />
-          <text fg={theme.colors.mutedForeground}>{formatUser(data.user)}</text>
+          {data.sessionLoading ? (
+            <Spinner
+              type="line"
+              label="checking"
+              color={theme.colors.mutedForeground}
+            />
+          ) : (
+            <text fg={theme.colors.mutedForeground}>{formatUser(data.user)}</text>
+          )}
         </box>
 
         <box
@@ -244,15 +318,20 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
         >
           {TABS.map((tab, i) => {
             const active = tab.id === view;
+            const locked = !signedIn && tab.id !== "auth";
             return (
               <box key={tab.id} flexDirection="row" gap={1}>
                 <text fg={theme.colors.mutedForeground}>{String(i + 1)}</text>
                 <text
                   fg={
-                    active ? theme.colors.accent : theme.colors.mutedForeground
+                    locked
+                      ? theme.colors.mutedForeground
+                      : active
+                        ? theme.colors.accent
+                        : theme.colors.mutedForeground
                   }
                 >
-                  {active ? <b>{tab.label}</b> : tab.label}
+                  {active && !locked ? <b>{tab.label}</b> : tab.label}
                 </text>
               </box>
             );
@@ -272,6 +351,8 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
               pr={data.pr}
               status={data.scanStatus}
               progress={data.scanProgress}
+              steps={data.scanSteps}
+              startedAt={data.scanStartedAt}
               findings={data.scanFindings}
               error={data.scanError}
               hint="s to scan this repo"
@@ -311,6 +392,8 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
               status={data.authStatus}
               device={data.device}
               error={data.authError}
+              waitingSince={data.loginStartedAt}
+              checking={data.sessionLoading}
             />
           ) : null}
         </box>
@@ -323,7 +406,7 @@ const Shell = ({ initialRoute, onQuit }: AppProps) => {
           flexShrink={0}
         >
           <text fg={theme.colors.mutedForeground}>
-            {footerFor(view, capturingText)}
+            {footerFor(view, capturingText, signedIn)}
           </text>
         </box>
       </box>
