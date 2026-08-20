@@ -113,7 +113,7 @@ export const resolveCommitSha = (ref: string): Effect.Effect<string, Error> =>
 export const getDefaultBranch = (): Effect.Effect<string, Error> =>
   runGit(["symbolic-ref", "refs/remotes/origin/HEAD"]).pipe(
     Effect.map((ref) => ref.replace(/^refs\/remotes\/origin\//, "")),
-    Effect.orElse(() => getCurrentBranch()),
+    Effect.catch(() => getCurrentBranch()),
   );
 
 /** Internal export for `upload.ts`, which needs to list/read blobs at a ref
@@ -126,7 +126,7 @@ export const gitInternals = { runGit, runGitRawBytes, assertNotOptionLike };
  * fetched as a remote-tracking ref, never checked out as a local branch. */
 export const resolveCommitShaOrRemote = (ref: string): Effect.Effect<string, Error> =>
   resolveCommitSha(ref).pipe(
-    Effect.orElse(() => resolveCommitSha(`origin/${ref}`)),
+    Effect.catch(() => resolveCommitSha(`origin/${ref}`)),
     Effect.mapError(
       () => new Error(`'${ref}' isn't available locally — run \`git fetch origin ${ref}\` or \`gh pr checkout <n>\` first.`),
     ),

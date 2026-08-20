@@ -3,11 +3,12 @@
  * `cli/src/commands/analyze.ts`/`scan.ts` before this extraction). Kept
  * separate from `api-types.ts` (pure types/guards) since this holds actual
  * command-shaped behavior (polling cadence, user-facing messages). */
-import type { HttpClient } from "@effect/platform";
-import { Console, Effect } from "effect";
+import { Console, Duration, Effect } from "effect";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
 import { apiRequest, ApiError } from "./http.js";
 import {
   type AnalysisRun,
+  type Finding,
   TERMINAL_STATUSES,
   isAnalysisRun,
   isFinding,
@@ -21,17 +22,23 @@ import {
  * so a run that's somehow already terminal doesn't do a pointless sleep. */
 export const waitForRun = (
   initial: AnalysisRun,
-): Effect.Effect<void, Error | ApiError, HttpClient.HttpClient> =>
+  onStatus?: (status: string) => void,
+): Effect.Effect<AnalysisRun, Error | ApiError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
+    const report = (status: string) =>
+      onStatus ? Effect.sync(() => onStatus(status)) : Effect.void;
+
     let current = initial;
+    yield* report(current.status);
     while (!TERMINAL_STATUSES.has(current.status)) {
-      yield* Effect.sleep("2 seconds");
+      yield* Effect.sleep(Duration.seconds(2));
       const polled = yield* apiRequest("GET", `/api/analysis/${initial.id}`);
       if (!isAnalysisRun(polled)) {
         return yield* Effect.fail(new Error("Server returned an unexpected response polling the run."));
       }
       current = polled;
       yield* Console.log(`  ${current.status}...`);
+      yield* report(current.status);
     }
 
     if (current.status !== "completed") {
@@ -43,23 +50,32 @@ export const waitForRun = (
         ),
       );
     }
+    return current;
+  });
+
+export const fetchFindings = (
+  runId: WireId,
+): Effect.Effect<readonly Finding[], Error | ApiError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const findingsRaw = yield* apiRequest("GET", `/api/analysis/${runId}/findings`);
+    if (!Array.isArray(findingsRaw) || !findingsRaw.every(isFinding)) {
+      return yield* Effect.fail(new Error("Server returned an unexpected response fetching findings."));
+    }
+    return findingsRaw;
   });
 
 /** Fetches and pretty-prints every finding for a completed run. Call only
  * after `waitForRun` succeeds. */
 export const printFindings = (runId: WireId): Effect.Effect<void, Error | ApiError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
-    const findingsRaw = yield* apiRequest("GET", `/api/analysis/${runId}/findings`);
-    if (!Array.isArray(findingsRaw) || !findingsRaw.every(isFinding)) {
-      return yield* Effect.fail(new Error("Server returned an unexpected response fetching findings."));
-    }
+    const findings = yield* fetchFindings(runId);
 
-    if (findingsRaw.length === 0) {
+    if (findings.length === 0) {
       yield* Console.log("No findings.");
       return;
     }
-    yield* Console.log(`${findingsRaw.length} finding(s):`);
-    for (const finding of findingsRaw) {
+    yield* Console.log(`${findings.length} finding(s):`);
+    for (const finding of findings) {
       yield* Console.log(`  [${finding.severity}/${finding.band}] ${finding.title}`);
     }
   });

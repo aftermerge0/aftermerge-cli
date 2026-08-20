@@ -3,8 +3,8 @@
  * connected repo am I standing inside of?" before doing anything else.
  * Kept out of `git.ts` (pure git plumbing, no HTTP) and out of `run.ts`
  * (analysis-run lifecycle, not repo lookup) so each module keeps one job. */
-import type { HttpClient } from "@effect/platform";
 import { Effect } from "effect";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
 import { apiRequest, ApiError } from "./http.js";
 import { getOriginRemote, normalizeCloneUrl } from "./git.js";
 import { type RepoRow, isRepoRow } from "./api-types.js";

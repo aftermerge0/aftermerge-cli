@@ -1,7 +1,6 @@
-import { Command, Options, Prompt } from "@effect/cli";
-import { Terminal } from "@effect/platform";
-import type { HttpClient } from "@effect/platform";
-import { Console, Effect, Option } from "effect";
+import { Console, Effect, Option, Terminal } from "effect";
+import { Command, Flag, Prompt } from "effect/unstable/cli";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
 import { apiRequest, ApiError } from "../http.js";
 import { resolveConnectedRepo } from "../connected-repo.js";
 import { waitForRun, printFindings } from "../run.js";
@@ -16,21 +15,23 @@ import {
   type IndexedBranch,
   type WireId,
 } from "../api-types.js";
+import type { ScanProgressEvent } from "../scan-progress.js";
 
-const baseOption = Options.text("base").pipe(
-  Options.optional,
-  Options.withDescription("Base ref to diff against (defaults to the repo's default branch)"),
+const baseOption = Flag.string("base").pipe(
+  Flag.optional,
+  Flag.withDescription("Base ref to diff against (defaults to the repo's default branch)"),
 );
 
-const prOption = Options.integer("pr").pipe(
-  Options.optional,
-  Options.withDescription(
+const prOption = Flag.integer("pr").pipe(
+  Flag.optional,
+  Flag.withDescription(
     "Analyze a specific PR by number instead of the current branch — resolves branches via your local `gh` CLI, no GitHub token needed",
   ),
 );
 
-const contextOption = Options.boolean("context").pipe(
-  Options.withDescription(
+const contextOption = Flag.boolean("context").pipe(
+  Flag.withDefault(false),
+  Flag.withDescription(
     "Pick other already-indexed repos/branches to include as cross-repo context (only already-indexed ones are offered — run `scan` inside another repo first, or index it from the dashboard, to make it available)",
   ),
 );
@@ -71,8 +72,8 @@ const pickContextRepos = (currentRepositoryId: WireId) =>
         })),
       }),
     ).pipe(
-      Effect.catchAll((error) =>
-        Terminal.isQuitException(error) ? Effect.succeed([] as IndexedBranch[]) : Effect.fail(error),
+      Effect.catch((error) =>
+        Terminal.isQuitError(error) ? Effect.succeed([] as IndexedBranch[]) : Effect.fail(error),
       ),
     );
   });
@@ -81,6 +82,7 @@ export interface LocalScanOptions {
   readonly base: Option.Option<string>;
   readonly pr: Option.Option<number>;
   readonly context: boolean;
+  readonly onProgress?: (event: ScanProgressEvent) => void;
 }
 
 /** The credential-free scan/analyze pipeline: resolve branches (locally, or
@@ -94,14 +96,23 @@ export const runLocalScan = ({
   base,
   pr,
   context,
-}: LocalScanOptions): Effect.Effect<void, Error | ApiError, HttpClient.HttpClient | Prompt.Prompt.Environment> =>
+  onProgress,
+}: LocalScanOptions): Effect.Effect<
+  { readonly runId: string },
+  Error | ApiError,
+  HttpClient.HttpClient | Prompt.Environment
+> =>
   Effect.gen(function* () {
+    const emit = (event: ScanProgressEvent) =>
+      onProgress ? Effect.sync(() => onProgress(event)) : Effect.void;
+
     if (Option.isSome(base) && Option.isSome(pr)) {
       return yield* Effect.fail(
         new Error("`--base` and `--pr` are mutually exclusive — `--pr` already determines both branches."),
       );
     }
 
+    yield* emit({ kind: "step", step: "resolve" });
     const repo = yield* resolveConnectedRepo(
       "This repo isn't connected yet. Run `aftermerge repos add-local` first, then try again.",
     );
@@ -142,15 +153,32 @@ export const runLocalScan = ({
     // window previously meant the content read could disagree with the sha
     // uploaded alongside it.
     yield* Console.log(`Reading ${baseBranch} (base)...`);
+    yield* emit({ kind: "step", step: "read-base", detail: baseBranch });
     const baseFiles = yield* readTrackedFilesAtRef(baseCommitSha);
     yield* Console.log(`Uploading and indexing ${baseBranch} (${baseFiles.length} files)...`);
+    yield* emit({
+      kind: "step",
+      step: "index-base",
+      detail: `${baseBranch} · ${baseFiles.length} files`,
+    });
     yield* uploadRef("base", repo.id, baseBranch, baseCommitSha, baseFiles);
 
     yield* Console.log(`Reading ${headBranch} (head)...`);
+    yield* emit({ kind: "step", step: "read-head", detail: headBranch });
     const headFiles = yield* readTrackedFilesAtRef(headCommitSha);
     yield* Console.log(`Uploading and indexing ${headBranch} (${headFiles.length} files)...`);
+    yield* emit({
+      kind: "step",
+      step: "index-head",
+      detail: `${headBranch} · ${headFiles.length} files`,
+    });
     yield* uploadRef("head", repo.id, headBranch, headCommitSha, headFiles);
 
+    yield* emit({
+      kind: "step",
+      step: "start",
+      detail: `${baseBranch}...${headBranch}`,
+    });
     yield* Console.log(
       prRefs
         ? `Starting analysis for ${repo.owner}/${repo.name} PR #${prRefs.number} (${baseBranch}...${headBranch})...`
@@ -191,8 +219,11 @@ export const runLocalScan = ({
     }
     yield* Console.log(`Run id: ${runRaw.id}`);
 
-    yield* waitForRun(runRaw);
+    yield* waitForRun(runRaw, (status) => {
+      onProgress?.({ kind: "analyze", status });
+    });
     yield* printFindings(runRaw.id);
+    return { runId: idToString(runRaw.id) };
   }).pipe(Effect.tapError((error: Error | ApiError) => Console.error(error.message)));
 
 export const scanCommand = Command.make(

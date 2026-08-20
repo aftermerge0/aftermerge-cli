@@ -1,9 +1,9 @@
-import { Command, Options } from "@effect/cli";
 import { Option } from "effect";
+import { Command, Flag } from "effect/unstable/cli";
 import { runLocalScan } from "./scan.js";
 
-const prOption = Options.integer("pr").pipe(
-  Options.withDescription("Pull request number to analyze"),
+const prOption = Flag.integer("pr").pipe(
+  Flag.withDescription("Pull request number to analyze"),
 );
 
 /** Thin wrapper over `scan`'s credential-free pipeline (`runLocalScan`),

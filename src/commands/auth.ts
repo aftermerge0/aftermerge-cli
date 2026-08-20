@@ -1,6 +1,7 @@
-import { Command, Options } from "@effect/cli";
-import { HttpClient, HttpClientRequest } from "@effect/platform";
-import { Console, Duration, Effect, Either } from "effect";
+import { Console, Duration, Effect, Result } from "effect";
+import { Command, Flag } from "effect/unstable/cli";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import { openInBrowser } from "../browser.js";
 import { clearCredentials, loadCredentials, saveCredentials } from "../config.js";
 import { apiRequest, CLI_USER_AGENT } from "../http.js";
@@ -11,9 +12,11 @@ import { parseUrl, validateServerUrl } from "../url.js";
 // Fixed rather than configurable: there is exactly one CLI client.
 const CLIENT_ID = "aftermerge-cli";
 
-const serverOption = Options.text("server").pipe(
-  Options.withDefault("https://www.aftermerge.dev"),
-  Options.withDescription(
+export const DEFAULT_AUTH_SERVER = "https://www.aftermerge.dev";
+
+const serverOption = Flag.string("server").pipe(
+  Flag.withDefault(DEFAULT_AUTH_SERVER),
+  Flag.withDescription(
     "Base URL of your AfterMerge deployment (defaults to production; pass --server http://localhost:3000 for local dev)",
   ),
 );
@@ -34,7 +37,7 @@ const SLOW_DOWN_INCREMENT_SECONDS = 5;
 // that's persistently broken should.
 const MAX_CONSECUTIVE_TRANSIENT_FAILURES = 3;
 
-interface DeviceCodeResponse {
+export interface DeviceCodeResponse {
   readonly device_code: string;
   readonly user_code: string;
   readonly verification_uri_complete: string;
@@ -82,14 +85,14 @@ const isValidDeviceCodeResponse = (value: unknown): value is DeviceCodeResponse 
 /** RFC 8628 device-code request against better-auth's deviceAuthorization
  * plugin (src/lib/auth.ts) — unauthenticated, so this bypasses `apiRequest`
  * (which requires a stored token) and talks to HttpClient directly. */
-const requestDeviceCode = (server: string): Effect.Effect<DeviceCodeResponse, Error, HttpClient.HttpClient> =>
+export const requestDeviceCode = (server: string): Effect.Effect<DeviceCodeResponse, Error, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const url = yield* parseUrl("/api/auth/device/code", server);
     const request = HttpClientRequest.post(url).pipe(
       HttpClientRequest.acceptJson,
       HttpClientRequest.setHeader("User-Agent", CLI_USER_AGENT),
-      HttpClientRequest.bodyUnsafeJson({ client_id: CLIENT_ID }),
+      HttpClientRequest.bodyJsonUnsafe({ client_id: CLIENT_ID }),
     );
     const response = yield* client.execute(request).pipe(
       Effect.mapError((cause) => new Error(`Could not reach ${server}: ${cause.message}`)),
@@ -120,7 +123,7 @@ const pollOnce = (server: string, deviceCode: string): Effect.Effect<DeviceToken
     const request = HttpClientRequest.post(url).pipe(
       HttpClientRequest.acceptJson,
       HttpClientRequest.setHeader("User-Agent", CLI_USER_AGENT),
-      HttpClientRequest.bodyUnsafeJson({
+      HttpClientRequest.bodyJsonUnsafe({
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         device_code: deviceCode,
         client_id: CLIENT_ID,
@@ -154,7 +157,7 @@ const pollOnce = (server: string, deviceCode: string): Effect.Effect<DeviceToken
  * as a plain retry instead of §3.5's mandated interval increase. Also
  * tolerates a single bad poll response instead of aborting the whole
  * sign-in over one transient blip. */
-const pollForToken = (
+export const pollForToken = (
   server: string,
   code: DeviceCodeResponse,
 ): Effect.Effect<string, Error, HttpClient.HttpClient> => {
@@ -167,17 +170,17 @@ const pollForToken = (
     while (true) {
       yield* Effect.sleep(Duration.seconds(interval));
 
-      const result = yield* Effect.either(pollOnce(server, code.device_code));
-      if (Either.isLeft(result)) {
+      const result = yield* Effect.result(pollOnce(server, code.device_code));
+      if (Result.isFailure(result)) {
         consecutiveTransientFailures++;
         if (consecutiveTransientFailures > MAX_CONSECUTIVE_TRANSIENT_FAILURES) {
-          return yield* Effect.fail(result.left);
+          return yield* Effect.fail(result.failure);
         }
         continue;
       }
       consecutiveTransientFailures = 0;
 
-      const value = result.right;
+      const value = result.success;
       if (value.ok) return value.accessToken;
       if (!value.retry) return yield* Effect.fail(new Error(value.message));
       if (value.slowDown) interval += SLOW_DOWN_INCREMENT_SECONDS;
@@ -185,27 +188,46 @@ const pollForToken = (
   });
 
   return poll.pipe(
-    Effect.timeoutFail({
+    Effect.timeoutOrElse({
       duration: deadline,
-      onTimeout: () => new Error("Sign-in code expired before it was approved. Run `aftermerge auth login` again."),
+      orElse: () =>
+        Effect.fail(new Error("Sign-in code expired before it was approved. Run `aftermerge auth login` again.")),
     }),
   );
 };
 
-const login = Command.make("login", { server: serverOption }, ({ server }) =>
+/** Start device-code login: request a code and open the browser. TUI polls
+ * separately so the device code can render while we wait. */
+export const startDeviceLogin = (
+  server: string,
+): Effect.Effect<DeviceCodeResponse, Error, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     yield* validateServerUrl(server);
     const code = yield* requestDeviceCode(server);
+    yield* openInBrowser(code.verification_uri_complete);
+    return code;
+  });
+
+export const finishDeviceLogin = (
+  server: string,
+  code: DeviceCodeResponse,
+): Effect.Effect<void, Error, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const token = yield* pollForToken(server, code);
+    yield* saveCredentials({ baseUrl: server, token });
+  });
+
+const login = Command.make("login", { server: serverOption }, ({ server }) =>
+  Effect.gen(function* () {
+    const code = yield* startDeviceLogin(server);
 
     yield* Console.log("");
     yield* Console.log(`  Code: ${code.user_code}`);
     yield* Console.log(`  Visit: ${code.verification_uri_complete}`);
     yield* Console.log("");
     yield* Console.log("Opening your browser — waiting for you to approve...");
-    yield* openInBrowser(code.verification_uri_complete);
 
-    const token = yield* pollForToken(server, code);
-    yield* saveCredentials({ baseUrl: server, token });
+    yield* finishDeviceLogin(server, code);
     yield* Console.log("Signed in.");
   }).pipe(
     // tapError (not catchAll): print the message but let the failure keep

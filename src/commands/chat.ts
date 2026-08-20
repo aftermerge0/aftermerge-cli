@@ -1,6 +1,6 @@
-import { Command, Prompt } from "@effect/cli";
-import { HttpClient } from "@effect/platform";
 import { Console, Effect } from "effect";
+import { Command, Prompt } from "effect/unstable/cli";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
 import { loadCredentials } from "../config.js";
 import { apiRequest, ApiError, CLI_USER_AGENT } from "../http.js";
 import { onQuit } from "../prompt-utils.js";
@@ -15,7 +15,7 @@ const isThreadRow = (value: unknown): value is ThreadRow =>
   typeof value === "object" &&
   isWireId((value as Record<string, unknown>).id);
 
-const createOrReuseThread = (): Effect.Effect<string, ApiError | Error, HttpClient.HttpClient> =>
+export const createOrReuseThread = (): Effect.Effect<string, ApiError | Error, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const thread = yield* apiRequest("POST", "/api/threads", { reuseEmpty: true });
     if (!isThreadRow(thread)) {
@@ -98,18 +98,24 @@ async function* readSseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<s
   }
 }
 
-function renderEvent(payload: string): void {
+export type ChatStreamEvent =
+  | { readonly _tag: "delta"; readonly text: string }
+  | { readonly _tag: "error"; readonly message: string };
+
+const parseChatEvent = (payload: string): ChatStreamEvent | undefined => {
   try {
     const event = JSON.parse(payload) as { type?: string; delta?: string; errorText?: string };
     if (event.type === "text-delta" && typeof event.delta === "string") {
-      process.stdout.write(event.delta);
-    } else if (event.type === "error") {
-      process.stdout.write(`\n[error: ${event.errorText ?? "unknown"}]\n`);
+      return { _tag: "delta", text: event.delta };
+    }
+    if (event.type === "error") {
+      return { _tag: "error", message: event.errorText ?? "unknown" };
     }
   } catch {
     // a partial/malformed event line — skip it, don't crash the chat loop
   }
-}
+  return undefined;
+};
 
 /** Wrapped in `Effect.tryPromise` (not `Effect.promise`) specifically so a
  * thrown/rejected error becomes a normal catchable Effect failure, not a
@@ -118,11 +124,12 @@ function renderEvent(payload: string): void {
  * interrupting this fiber (Ctrl+C during a streaming turn) actually cancels
  * the in-flight request instead of abandoning it to keep running and
  * reading in the background. */
-const sendMessage = (
+export const streamChatTurn = (
   baseUrl: string,
   token: string,
   threadId: string,
   text: string,
+  emit: (event: ChatStreamEvent) => void,
 ): Effect.Effect<void, ApiError> =>
   Effect.tryPromise({
     try: async (signal) => {
@@ -141,9 +148,11 @@ const sendMessage = (
       }
 
       for await (const payload of readSseLines(response.body)) {
-        renderEvent(payload);
+        const event = parseChatEvent(payload);
+        if (event) {
+          emit(event);
+        }
       }
-      process.stdout.write("\n");
     },
     catch: (cause) =>
       cause instanceof ApiError
@@ -153,6 +162,20 @@ const sendMessage = (
             message: cause instanceof Error ? cause.message : "Chat request failed",
           }),
   });
+
+const sendMessage = (
+  baseUrl: string,
+  token: string,
+  threadId: string,
+  text: string,
+): Effect.Effect<void, ApiError> =>
+  streamChatTurn(baseUrl, token, threadId, text, (event) => {
+    if (event._tag === "delta") {
+      process.stdout.write(event.text);
+    } else {
+      process.stdout.write(`\n[error: ${event.message}]\n`);
+    }
+  }).pipe(Effect.tap(() => Effect.sync(() => process.stdout.write("\n"))));
 
 export const chatCommand = Command.make("chat", {}, () =>
   Effect.gen(function* () {
@@ -174,7 +197,7 @@ export const chatCommand = Command.make("chat", {}, () =>
       yield* sendMessage(credentials.baseUrl, credentials.token, threadId, trimmed).pipe(
         // Per-message failures don't end the session — only starting the
         // chat (thread creation, sign-in) is fatal; a bad turn is retryable.
-        Effect.catchAll((error) => Console.error(error.message)),
+        Effect.catch((error) => Console.error(error.message)),
       );
       yield* Console.log("");
     }
